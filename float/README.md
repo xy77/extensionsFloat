@@ -22,10 +22,17 @@ Float 是一个私下分发的 Chrome unpacked extension。它不依赖 Chrome W
 3. 开启 Developer mode。
 4. 点击 Load unpacked，选择解压后的插件目录。
 5. 在扩展卡片上复制 Extension ID。
-6. 打开终端，在插件目录运行一次 Native Host 安装脚本：
+6. 确认电脑已安装 Node.js LTS。Native Host updater 需要 Node.js 来执行下载、备份和替换。
+7. 打开终端，在插件目录运行一次 Native Host 安装脚本：
 
 ```bash
 ./scripts/install-native-host-macos.sh <EXTENSION_ID> "$(pwd)"
+```
+
+如果 Node 安装在 nvm 等自定义位置，可以显式指定：
+
+```bash
+NODE_BIN="/absolute/path/to/node" ./scripts/install-native-host-macos.sh <EXTENSION_ID> "$(pwd)"
 ```
 
 完成后，后续版本更新都可以在插件面板里点击完成。
@@ -98,8 +105,9 @@ https://raw.githubusercontent.com/xy77/extensionsFloat/main/latest.json
 - `data/`
 - `logs/`
 - `native-host/config.json`
+- `native-host/node-bin`
 
-备份会写入插件目录下的 `backups/`。发布包会排除 `.env`、`config.local.json`、`data/`、`logs/`、`backups/`、`native-host/config.json` 和 `node_modules/`。
+备份会写入插件目录下的 `backups/`。发布包会排除 `.env`、`config.local.json`、`data/`、`logs/`、`backups/`、`native-host/config.json`、`native-host/node-bin` 和 `node_modules/`。
 
 ## 常见问题
 

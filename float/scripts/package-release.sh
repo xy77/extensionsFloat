@@ -25,6 +25,7 @@ zip -r "$ZIP_PATH" . \
   -x ".env" \
   -x "config.local.json" \
   -x "native-host/config.json" \
+  -x "native-host/node-bin" \
   -x ".DS_Store" \
   -x "*/.DS_Store"
 

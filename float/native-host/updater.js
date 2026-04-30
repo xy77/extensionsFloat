@@ -15,7 +15,8 @@ const PRESERVE_PATHS = [
   'config.local.json',
   'data',
   'logs',
-  'native-host/config.json'
+  'native-host/config.json',
+  'native-host/node-bin'
 ];
 const BACKUP_DIR_NAME = 'backups';
 
