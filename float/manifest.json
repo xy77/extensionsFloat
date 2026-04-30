@@ -4,11 +4,17 @@
   "version": "1.0.0",
   "description": "",
   "permissions": [
-    "storage"
+    "storage",
+    "nativeMessaging"
   ],
   "host_permissions": [
-    "<all_urls>"
+    "<all_urls>",
+    "https://raw.githubusercontent.com/*",
+    "https://github.com/*"
   ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
       "matches": ["<all_urls>"],

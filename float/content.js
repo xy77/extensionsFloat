@@ -354,6 +354,95 @@
 	      color: var(--memo-action-color);
 	    }
 
+	    #memo-toolbar {
+	      position: relative;
+	      z-index: 20;
+	      display: flex;
+	      align-items: center;
+	      flex-wrap: wrap;
+	      gap: 8px;
+	      box-sizing: border-box;
+	      padding: 10px 10px 0;
+	      color: var(--memo-text-color);
+	      font-family: system-ui, -apple-system, sans-serif;
+	    }
+
+	    #version-label {
+	      display: inline-flex;
+	      align-items: center;
+	      min-height: 26px;
+	      border: 1px solid var(--memo-input-border);
+	      border-radius: 999px;
+	      background: rgba(128, 134, 139, 0.10);
+	      color: var(--memo-muted-text-color);
+	      padding: 0 9px;
+	      font: 600 12px/1 system-ui, -apple-system, sans-serif;
+	      user-select: none;
+	    }
+
+	    .update-button {
+	      min-height: 28px;
+	      border: 1px solid var(--memo-input-border);
+	      border-radius: 8px;
+	      background: var(--memo-input-bg);
+	      color: var(--memo-text-color);
+	      cursor: pointer;
+	      padding: 0 10px;
+	      font: 600 12px/1 system-ui, -apple-system, sans-serif;
+	    }
+
+	    .update-button.primary {
+	      border-color: transparent;
+	      background: var(--memo-action-bg);
+	      color: var(--memo-action-color);
+	    }
+
+	    .update-button:disabled {
+	      cursor: not-allowed;
+	      opacity: 0.55;
+	    }
+
+	    #update-status,
+	    #update-changelog {
+	      flex: 0 0 100%;
+	      box-sizing: border-box;
+	      color: var(--memo-muted-text-color);
+	      font: 12px/1.45 system-ui, -apple-system, sans-serif;
+	    }
+
+	    #update-status {
+	      min-height: 17px;
+	    }
+
+	    #update-status.error {
+	      color: #b3261e;
+	    }
+
+	    #update-status.success {
+	      color: #137333;
+	    }
+
+	    #wrapper[data-theme="dark"] #update-status.error {
+	      color: #ffb4ab;
+	    }
+
+	    #wrapper[data-theme="dark"] #update-status.success {
+	      color: #8bd58f;
+	    }
+
+	    #update-changelog {
+	      display: none;
+	      max-height: 70px;
+	      overflow: auto;
+	      white-space: pre-wrap;
+	      border-left: 2px solid var(--memo-input-border);
+	      padding-left: 8px;
+	    }
+
+	    #update-changelog.show {
+	      display: block;
+	    }
+
     /* 调整边缘 Resizers */
     .resizer {
       position: absolute;
@@ -421,6 +510,14 @@
 	          </div>
 	        </div>
 	      </div>
+
+	      <div id="memo-toolbar">
+	        <span id="version-label">版本 --</span>
+	        <button id="check-update-btn" class="update-button" type="button">检查更新</button>
+	        <button id="update-now-btn" class="update-button primary" type="button" hidden>立即更新</button>
+	        <div id="update-status" role="status" aria-live="polite"></div>
+	        <div id="update-changelog"></div>
+	      </div>
 	      
 	      <textarea id="editor" spellcheck="false" placeholder=""></textarea>
     </div>
@@ -437,6 +534,11 @@
 	    const downloadExtension = shadow.getElementById('download-extension');
 	    const downloadCancel = shadow.getElementById('download-cancel');
 	    const downloadConfirm = shadow.getElementById('download-confirm');
+	    const versionLabel = shadow.getElementById('version-label');
+	    const checkUpdateBtn = shadow.getElementById('check-update-btn');
+	    const updateNowBtn = shadow.getElementById('update-now-btn');
+	    const updateStatus = shadow.getElementById('update-status');
+	    const updateChangelog = shadow.getElementById('update-changelog');
   const ctx = canvas.getContext('2d');
 
   // ==================== 状态管理与防抖同步 ====================
@@ -1143,6 +1245,140 @@
   resizeObserver.observe(panel);
   
   // ==================== 业务逻辑与快捷键 ====================
+
+	  const UPDATE_MESSAGE_TYPES = {
+	    STATUS: 'float-updater:get-status',
+	    CHECK: 'float-updater:check',
+	    UPDATE: 'float-updater:update'
+	  };
+	  let latestUpdatePayload = null;
+	  let latestNativeHostInfo = null;
+
+	  function setUpdateStatus(message, type) {
+	    updateStatus.textContent = message || '';
+	    updateStatus.classList.toggle('error', type === 'error');
+	    updateStatus.classList.toggle('success', type === 'success');
+	  }
+
+	  function setUpdateBusy(isBusy) {
+	    checkUpdateBtn.disabled = isBusy;
+	    updateNowBtn.disabled = isBusy || !latestUpdatePayload || (latestNativeHostInfo && latestNativeHostInfo.ok === false);
+	  }
+
+	  function setUpdateChangelog(changelog) {
+	    const normalized = String(changelog || '').trim();
+	    updateChangelog.textContent = normalized;
+	    updateChangelog.classList.toggle('show', Boolean(normalized));
+	  }
+
+	  function sendUpdateMessage(type, payload) {
+	    return new Promise((resolve, reject) => {
+	      chrome.runtime.sendMessage({ type, payload }, (response) => {
+	        const lastError = chrome.runtime.lastError;
+	        if (lastError) {
+	          reject(new Error(lastError.message || '扩展后台通信失败。'));
+	          return;
+	        }
+	        resolve(response);
+	      });
+	    });
+	  }
+
+	  function updateVersionLabel(version) {
+	    const currentVersion = version || (chrome.runtime.getManifest && chrome.runtime.getManifest().version) || '--';
+	    versionLabel.textContent = `版本 ${currentVersion}`;
+	  }
+
+	  async function initUpdaterUi() {
+	    updateVersionLabel();
+
+	    try {
+	      const result = await sendUpdateMessage(UPDATE_MESSAGE_TYPES.STATUS);
+	      if (result && result.ok) {
+	        updateVersionLabel(result.version);
+	      }
+	    } catch (_) {
+	      setUpdateStatus('更新后台未就绪，请重新加载扩展后再试。', 'error');
+	    }
+	  }
+
+	  async function checkForUpdate() {
+	    latestUpdatePayload = null;
+	    latestNativeHostInfo = null;
+	    updateNowBtn.hidden = true;
+	    setUpdateChangelog('');
+	    setUpdateStatus('正在检查更新...', '');
+	    setUpdateBusy(true);
+
+	    try {
+	      const result = await sendUpdateMessage(UPDATE_MESSAGE_TYPES.CHECK);
+
+	      if (!result || !result.ok) {
+	        setUpdateStatus((result && result.message) || '检查更新失败。', 'error');
+	        return;
+	      }
+
+	      updateVersionLabel(result.currentVersion || result.version);
+
+	      if (!result.updateAvailable) {
+	        setUpdateStatus(result.isDowngrade ? '当前版本高于 latest.json 中的版本。' : '当前已经是最新版本。', 'success');
+	        return;
+	      }
+
+	      latestUpdatePayload = result.latest;
+	      latestNativeHostInfo = result.nativeHost;
+	      updateNowBtn.hidden = false;
+	      setUpdateChangelog(result.latest.changelog);
+
+	      if (latestNativeHostInfo && latestNativeHostInfo.ok === false) {
+	        setUpdateStatus(`发现 ${result.latest.version}，但 updater 不可用：${latestNativeHostInfo.message}`, 'error');
+	        return;
+	      }
+
+	      if (latestNativeHostInfo && latestNativeHostInfo.extensionDir) {
+	        latestUpdatePayload.extensionDir = latestNativeHostInfo.extensionDir;
+	      }
+
+	      setUpdateStatus(`发现新版本 ${result.latest.version}。`, '');
+	    } catch (error) {
+	      setUpdateStatus(error.message || '检查更新失败。', 'error');
+	    } finally {
+	      setUpdateBusy(false);
+	    }
+	  }
+
+	  async function updateNow() {
+	    if (!latestUpdatePayload) {
+	      setUpdateStatus('请先检查更新。', 'error');
+	      return;
+	    }
+
+	    setUpdateStatus('正在下载并安装更新...', '');
+	    setUpdateBusy(true);
+
+	    try {
+	      const result = await sendUpdateMessage(UPDATE_MESSAGE_TYPES.UPDATE, {
+	        latest: latestUpdatePayload,
+	        extensionDir: latestUpdatePayload.extensionDir || ''
+	      });
+
+	      if (!result || !result.ok) {
+	        setUpdateStatus((result && result.message) || '更新失败。', 'error');
+	        return;
+	      }
+
+	      setUpdateStatus('更新成功，正在重新加载插件。如果没有生效，请在 chrome://extensions 中点击刷新。', 'success');
+	      updateNowBtn.hidden = true;
+	    } catch (error) {
+	      setUpdateStatus(error.message || '更新失败。', 'error');
+	    } finally {
+	      setUpdateBusy(false);
+	    }
+	  }
+
+	  initUpdaterUi();
+	  checkUpdateBtn.addEventListener('click', checkForUpdate);
+	  updateNowBtn.addEventListener('click', updateNow);
 
 	  function detectFormat(text) {
 	    const t = text.trim();
