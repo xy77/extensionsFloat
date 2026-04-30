@@ -1,9 +1,0 @@
-.DS_Store
-.env
-config.local.json
-data/
-logs/
-backups/
-dist/
-node_modules/
-native-host/config.json
