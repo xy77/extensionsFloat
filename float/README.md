@@ -1,6 +1,6 @@
 # Float Chrome Extension
 
-Float 是一个私下分发的 Chrome unpacked extension。它不依赖 Chrome Web Store，更新通过插件内按钮触发，再由 Native Messaging 调用本机 Node updater 完成下载、备份、替换和回滚。
+Float 是一个私下分发的 Chrome unpacked extension。它不依赖 Chrome Web Store，更新通过插件内按钮触发，再由 Native Messaging 调用 macOS 本机 updater 完成下载、备份、替换和回滚。
 
 ## 项目结构
 
@@ -9,7 +9,7 @@ Float 是一个私下分发的 Chrome unpacked extension。它不依赖 Chrome W
 - `background.js`: 插件后台，负责检查更新和调用 Native Messaging host。
 - `src/updater/checkUpdate.js`: 读取 `latest.json`，做 semver 比较。
 - `src/updater/nativeHost.js`: 调用 `chrome.runtime.sendNativeMessage`。
-- `native-host/updater.js`: 本机 updater，执行下载、sha256 校验、解压、备份、替换、回滚。
+- `native-host/updater-macos.sh`: 本机 updater，使用 macOS 自带工具执行下载、sha256 校验、解压、备份、替换、回滚。
 - `scripts/install-native-host-macos.sh`: macOS Native Messaging host 安装脚本。
 - `scripts/package-release.sh`: 生成 release zip 和 `latest.json`。
 
@@ -22,17 +22,10 @@ Float 是一个私下分发的 Chrome unpacked extension。它不依赖 Chrome W
 3. 开启 Developer mode。
 4. 点击 Load unpacked，选择解压后的插件目录。
 5. 在扩展卡片上复制 Extension ID。
-6. 确认电脑已安装 Node.js LTS。Native Host updater 需要 Node.js 来执行下载、备份和替换。
-7. 打开终端，在插件目录运行一次 Native Host 安装脚本：
+6. 打开终端，在插件目录运行一次 Native Host 安装脚本：
 
 ```bash
 ./scripts/install-native-host-macos.sh <EXTENSION_ID> "$(pwd)"
-```
-
-如果 Node 安装在 nvm 等自定义位置，可以显式指定：
-
-```bash
-NODE_BIN="/absolute/path/to/node" ./scripts/install-native-host-macos.sh <EXTENSION_ID> "$(pwd)"
 ```
 
 完成后，后续版本更新都可以在插件面板里点击完成。
@@ -105,9 +98,7 @@ https://raw.githubusercontent.com/xy77/extensionsFloat/main/latest.json
 - `data/`
 - `logs/`
 - `native-host/config.json`
-- `native-host/node-bin`
-
-备份会写入插件目录下的 `backups/`。发布包会排除 `.env`、`config.local.json`、`data/`、`logs/`、`backups/`、`native-host/config.json`、`native-host/node-bin` 和 `node_modules/`。
+备份会写入插件目录下的 `backups/`。发布包会排除 `.env`、`config.local.json`、`data/`、`logs/`、`backups/`、`native-host/config.json` 和 `node_modules/`。
 
 ## 常见问题
 
@@ -141,7 +132,7 @@ https://raw.githubusercontent.com/xy77/extensionsFloat/main/latest.json
 
 ## Windows 预留
 
-核心 updater 是 Node.js，Native Messaging 协议本身跨平台。当前只提供 macOS 安装脚本；Windows 后续可以新增注册表安装脚本，把同一个 `native-host/updater.js` 注册为 Chrome Native Messaging host。
+当前 updater 使用 macOS 自带工具实现。Windows 后续需要新增单独的 updater 可执行文件和注册表安装脚本。
 
 ## 卸载 Native Host
 

@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 GITHUB_REPO="${GITHUB_REPO:-xy77/extensionsFloat}"
 DIST_DIR="$ROOT_DIR/dist"
-VERSION="$(node -e "const fs=require('fs'); console.log(JSON.parse(fs.readFileSync('manifest.json','utf8')).version)")"
+VERSION="$(/usr/bin/plutil -extract version raw -o - "$ROOT_DIR/manifest.json")"
 ZIP_NAME="extension-v$VERSION.zip"
 ZIP_PATH="$DIST_DIR/$ZIP_NAME"
 LATEST_PATH="$DIST_DIR/latest.json"
@@ -25,7 +25,6 @@ zip -r "$ZIP_PATH" . \
   -x ".env" \
   -x "config.local.json" \
   -x "native-host/config.json" \
-  -x "native-host/node-bin" \
   -x ".DS_Store" \
   -x "*/.DS_Store"
 

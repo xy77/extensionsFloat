@@ -13,7 +13,7 @@
     }
 
     if (/Error when communicating with the native messaging host/i.test(message)) {
-      return '无法和本机 updater 通信。请确认 Node.js 可用，并重新安装 Native Host。';
+      return '无法和本机 updater 通信。请重新安装 Native Host。';
     }
 
     return message || 'Native Messaging 调用失败。';
