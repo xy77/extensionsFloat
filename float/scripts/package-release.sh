@@ -9,6 +9,7 @@ VERSION="$(/usr/bin/plutil -extract version raw -o - "$ROOT_DIR/manifest.json")"
 ZIP_NAME="extension-v$VERSION.zip"
 ZIP_PATH="$DIST_DIR/$ZIP_NAME"
 LATEST_PATH="$DIST_DIR/latest.json"
+ROOT_LATEST_PATH="$ROOT_DIR/latest.json"
 DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/download/v$VERSION/$ZIP_NAME"
 
 cd "$ROOT_DIR"
@@ -22,6 +23,7 @@ zip -r "$ZIP_PATH" . \
   -x "logs/*" \
   -x "data/*" \
   -x "dist/*" \
+  -x "latest.json" \
   -x ".env" \
   -x "config.local.json" \
   -x "native-host/config.json" \
@@ -39,7 +41,10 @@ cat > "$LATEST_PATH" <<JSON
 }
 JSON
 
+cp "$LATEST_PATH" "$ROOT_LATEST_PATH"
+
 echo "Release package created:"
 echo "  $ZIP_PATH"
 echo "  $LATEST_PATH"
+echo "  $ROOT_LATEST_PATH"
 echo "  sha256: $SHA256"
