@@ -11,7 +11,8 @@ Float 是一个私下分发的 Chrome unpacked extension。它不依赖 Chrome W
 - `src/updater/nativeHost.js`: 调用 `chrome.runtime.sendNativeMessage`。
 - `native-host/updater-macos.sh`: 本机 updater，使用 macOS 自带工具执行下载、sha256 校验、解压、备份、替换、回滚。
 - `scripts/install-native-host-macos.sh`: macOS Native Messaging host 安装脚本。
-- `scripts/package-release.sh`: 生成 release zip 和 `latest.json`。
+- `.github/workflows/release-extension.yml`: GitHub Actions 自动生成 release zip、`latest.json` 和 GitHub Release。
+- `scripts/package-release.sh`: 本地手动生成 release zip 和 `latest.json`，通常不需要使用。
 
 ## 首次安装
 
@@ -43,7 +44,7 @@ Native Messaging 的 `allowed_origins` 必须写入准确的 Extension ID。
 1. 打开插件面板。
 2. 面板顶部会显示当前版本。
 3. 点击“检查更新”。
-4. 插件从 public GitHub 仓库读取 `latest.json`。
+4. 插件从 GitHub 最新 Release 读取 `latest.json`。
 5. 如果有新版本，会显示版本号、更新说明和“立即更新”按钮。
 6. 点击“立即更新”后，插件通过 Native Messaging 调用本机 updater。
 7. updater 会下载 `extension-v<version>.zip`，校验版本，按需校验 sha256，备份当前目录，替换文件并保留本地配置。
@@ -53,25 +54,31 @@ Native Messaging 的 `allowed_origins` 必须写入准确的 Extension ID。
 
 ## 发布新版本
 
+日常发布只需要 GitHub Desktop，不需要手动创建 GitHub Release。
+
 1. 修改 `manifest.json` 的 `version`，版本号使用 semver，例如 `1.0.1`、`1.1.0`。
-2. 运行打包脚本：
+2. 在 GitHub Desktop 里 commit。
+3. 点击 Push origin。
+4. GitHub Actions 会自动：
+   - 读取 `manifest.json` 的版本号
+   - 创建 tag，例如 `v1.0.1`
+   - 打包 `extension-v1.0.1.zip`
+   - 生成 `latest.json`
+   - 创建 GitHub Release
+   - 上传 `extension-v1.0.1.zip` 和 `latest.json`
 
-```bash
-GITHUB_REPO=xy77/extensionsFloat ./scripts/package-release.sh
-```
+如果当前版本的 tag 已经存在，Actions 会跳过发布，避免重复创建 Release。
 
-3. 脚本会生成：
-
-- `dist/extension-v<version>.zip`
-- `dist/latest.json`
-
-4. 在 GitHub 创建 Release，tag 使用 `v<version>`，上传 `extension-v<version>.zip`。
-5. 把 `dist/latest.json` 发布到仓库 main 分支根目录的 `latest.json`。
-
-默认插件读取：
+发布进度可以在仓库的 Actions 页面查看：
 
 ```text
-https://raw.githubusercontent.com/xy77/extensionsFloat/main/latest.json
+https://github.com/xy77/extensionsFloat/actions
+```
+
+默认插件读取最新 Release 里的 `latest.json`：
+
+```text
+https://github.com/xy77/extensionsFloat/releases/latest/download/latest.json
 ```
 
 如果仓库名或路径改变，请修改 `src/updater/checkUpdate.js` 里的 `DEFAULT_LATEST_JSON_URL`。
@@ -89,6 +96,20 @@ https://raw.githubusercontent.com/xy77/extensionsFloat/main/latest.json
 
 `sha256` 可以为空，但推荐保留。只要 `latest.json` 提供了 `sha256`，updater 就必须校验通过才会替换文件。
 
+## 本地手动打包（可选）
+
+正常情况下由 GitHub Actions 自动打包。如果需要在本机临时生成 zip，可以运行：
+
+```bash
+GITHUB_REPO=xy77/extensionsFloat ./scripts/package-release.sh
+```
+
+脚本会生成：
+
+- `dist/extension-v<version>.zip`
+- `dist/latest.json`
+- `latest.json`
+
 ## 本地文件保留规则
 
 更新时会保留这些本地文件和目录：
@@ -98,6 +119,7 @@ https://raw.githubusercontent.com/xy77/extensionsFloat/main/latest.json
 - `data/`
 - `logs/`
 - `native-host/config.json`
+
 备份会写入插件目录下的 `backups/`。发布包会排除 `.env`、`config.local.json`、`data/`、`logs/`、`backups/`、`native-host/config.json` 和 `node_modules/`。
 
 ## 常见问题
@@ -124,7 +146,7 @@ https://raw.githubusercontent.com/xy77/extensionsFloat/main/latest.json
 
 `下载包 sha256 校验失败`
 
-重新运行 `scripts/package-release.sh`，用新的 `dist/latest.json` 覆盖仓库里的 `latest.json`。
+确认 GitHub Actions 生成的 Release asset 和 `latest.json` 是同一次发布。如果手动替换过 zip，重新改一个新版本号并用 GitHub Desktop push，让 Actions 重新发布。
 
 `更新成功但界面没变化`
 
@@ -138,41 +160,4 @@ https://raw.githubusercontent.com/xy77/extensionsFloat/main/latest.json
 
 ```bash
 ./scripts/uninstall-native-host-macos.sh
-```
-```text
-我已经把本地版本改成 1.0.1 并重新打包好了。
-
-生成了：
-
-```
-/Users/y/Documents/float/dist/extension-v1.0.1.zip
-/Users/y/Documents/float/latest.json
-```
-
-latest.json 现在指向：
-
-```
-https://github.com/xy77/extensionsFloat/releases/download/v1.0.1/extension-v1.0.1.zip
-```
-
-下一步你在 GitHub Desktop 里：
-
-1. Commit 这次改动
-2. Push 到 main
-3. 去 GitHub 创建新 Release
-4. Tag 填：
-
-```
-v1.0.1
-```
-
-5. 上传：
-
-```
-/Users/y/Documents/float/dist/extension-v1.0.1.zip
-```
-
-6. Publish release
-
-完成后，当前装着 1.0.0 的 Chrome 插件点“检查更新”，应该就能看到 1.0.1 了。
 ```

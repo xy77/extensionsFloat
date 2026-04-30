@@ -1,5 +1,5 @@
 (function (scope) {
-  const DEFAULT_LATEST_JSON_URL = 'https://raw.githubusercontent.com/xy77/extensionsFloat/main/latest.json';
+  const DEFAULT_LATEST_JSON_URL = 'https://github.com/xy77/extensionsFloat/releases/latest/download/latest.json';
 
   function parseSemver(version) {
     const match = String(version || '').trim().match(/^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/);
