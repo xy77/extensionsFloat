@@ -139,3 +139,23 @@ https://raw.githubusercontent.com/xy77/extensionsFloat/main/latest.json
 ```bash
 ./scripts/uninstall-native-host-macos.sh
 ```
+我已经把本地版本改成 1.0.1 并重新打包好了。
+
+生成了：
+
+/Users/y/Documents/float/dist/extension-v1.0.1.zip
+/Users/y/Documents/float/latest.json
+latest.json 现在指向：
+
+https://github.com/xy77/extensionsFloat/releases/download/v1.0.1/extension-v1.0.1.zip
+下一步你在 GitHub Desktop 里：
+
+Commit 这次改动
+Push 到 main
+去 GitHub 创建新 Release
+Tag 填：
+v1.0.1
+上传：
+/Users/y/Documents/float/dist/extension-v1.0.1.zip
+Publish release
+完成后，当前装着 1.0.0 的 Chrome 插件点“检查更新”，应该就能看到 1.0.1 了。
