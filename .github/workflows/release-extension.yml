@@ -1,0 +1,140 @@
+name: Release extension
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Package and publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./manifest.json').version")"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "manifest.json version must be semver, got: $version" >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check existing release
+        id: existing
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release $TAG_NAME already exists. Skipping publish."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Package extension
+        if: steps.existing.outputs.exists == 'false'
+        id: package
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG_NAME: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          zip_name="extension-v$VERSION.zip"
+          zip_path="dist/$zip_name"
+          latest_path="dist/latest.json"
+          download_url="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG_NAME/$zip_name"
+
+          rm -f "$zip_path" "$latest_path"
+          zip -r "$zip_path" . \
+            -x ".git/*" \
+            -x ".github/*" \
+            -x "node_modules/*" \
+            -x "backups/*" \
+            -x "logs/*" \
+            -x "data/*" \
+            -x "dist/*" \
+            -x "latest.json" \
+            -x ".env" \
+            -x "config.local.json" \
+            -x "native-host/config.json" \
+            -x ".DS_Store" \
+            -x "*/.DS_Store"
+
+          sha256="$(sha256sum "$zip_path" | awk '{print $1}')"
+          cat > "$latest_path" <<JSON
+          {
+            "version": "$VERSION",
+            "downloadUrl": "$download_url",
+            "sha256": "$sha256",
+            "changelog": "Automated release $TAG_NAME."
+          }
+          JSON
+
+          echo "zip_path=$zip_path" >> "$GITHUB_OUTPUT"
+          echo "latest_path=$latest_path" >> "$GITHUB_OUTPUT"
+          echo "zip_name=$zip_name" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag
+        if: steps.existing.outputs.exists == 'false'
+        shell: bash
+        env:
+          TAG_NAME: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG_NAME" >/dev/null 2>&1; then
+            echo "Tag $TAG_NAME already exists."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG_NAME" -m "$TAG_NAME"
+          git push origin "$TAG_NAME"
+
+      - name: Publish GitHub release
+        if: steps.existing.outputs.exists == 'false'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          ZIP_PATH: ${{ steps.package.outputs.zip_path }}
+          LATEST_PATH: ${{ steps.package.outputs.latest_path }}
+          SHA256: ${{ steps.package.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          notes_file="$RUNNER_TEMP/release-notes.md"
+          cat > "$notes_file" <<EOF
+          Automated release for version $VERSION.
+
+          SHA256:
+          \`\`\`
+          $SHA256
+          \`\`\`
+          EOF
+
+          gh release create "$TAG_NAME" "$ZIP_PATH" "$LATEST_PATH" \
+            --title "$TAG_NAME" \
+            --notes-file "$notes_file"
