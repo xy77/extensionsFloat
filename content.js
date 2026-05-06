@@ -356,21 +356,36 @@
 
 	    #update-popover {
 	      position: absolute;
-	      top: 66px;
-	      right: 0;
+	      top: 68px;
+	      right: -4px;
 	      z-index: 80;
 	      display: none;
 	      flex-direction: column;
-	      gap: 8px;
-	      width: 270px;
+	      gap: 10px;
+	      width: 236px;
 	      box-sizing: border-box;
-	      padding: 10px;
-	      border: 1px solid var(--memo-input-border);
-	      border-radius: 10px;
+	      padding: 12px;
+	      border: 1px solid rgba(128, 134, 139, 0.18);
+	      border-radius: 12px;
 	      background: var(--memo-modal-bg);
 	      color: var(--memo-text-color);
-	      box-shadow: var(--memo-panel-shadow);
+	      box-shadow: 0 14px 32px -18px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.24) inset;
 	      font-family: system-ui, -apple-system, sans-serif;
+	      backdrop-filter: blur(10px);
+	      -webkit-backdrop-filter: blur(10px);
+	    }
+
+	    #update-popover::before {
+	      content: "";
+	      position: absolute;
+	      top: -7px;
+	      right: 22px;
+	      width: 12px;
+	      height: 12px;
+	      transform: rotate(45deg);
+	      border-left: 1px solid rgba(128, 134, 139, 0.18);
+	      border-top: 1px solid rgba(128, 134, 139, 0.18);
+	      background: var(--memo-modal-bg);
 	      backdrop-filter: blur(10px);
 	      -webkit-backdrop-filter: blur(10px);
 	    }
@@ -407,24 +422,31 @@
 	      display: inline-flex;
 	      align-items: center;
 	      min-height: 26px;
-	      border: 1px solid var(--memo-input-border);
+	      border: 1px solid rgba(128, 134, 139, 0.18);
 	      border-radius: 999px;
-	      background: rgba(128, 134, 139, 0.10);
+	      background: rgba(128, 134, 139, 0.08);
 	      color: var(--memo-muted-text-color);
-	      padding: 0 9px;
+	      padding: 0 10px;
 	      font: 600 12px/1 system-ui, -apple-system, sans-serif;
 	      user-select: none;
 	    }
 
 	    .update-button {
 	      min-height: 28px;
-	      border: 1px solid var(--memo-input-border);
-	      border-radius: 8px;
-	      background: var(--memo-input-bg);
+	      border: 1px solid rgba(128, 134, 139, 0.22);
+	      border-radius: 999px;
+	      background: rgba(255, 255, 255, 0.64);
 	      color: var(--memo-text-color);
 	      cursor: pointer;
-	      padding: 0 10px;
+	      padding: 0 12px;
 	      font: 600 12px/1 system-ui, -apple-system, sans-serif;
+	      transition: transform 0.16s, background-color 0.16s, border-color 0.16s;
+	    }
+
+	    .update-button:hover:not(:disabled) {
+	      transform: translateY(-1px);
+	      border-color: rgba(60, 64, 67, 0.28);
+	      background: rgba(255, 255, 255, 0.86);
 	    }
 
 	    .update-button.primary {
@@ -1148,11 +1170,8 @@
 	    showUpdatePopover();
 	  });
 
-	  document.addEventListener('pointerdown', (e) => {
-	    if (!e.composedPath().includes(host)) {
-	      hideUpdatePopover();
-	    }
-	  }, true);
+	  document.addEventListener('pointerdown', hideUpdatePopover, true);
+	  document.addEventListener('click', hideUpdatePopover, true);
 
 	  document.addEventListener('keydown', (e) => {
 	    if (e.key === 'Escape') {
