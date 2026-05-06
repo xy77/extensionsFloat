@@ -18,13 +18,13 @@ Float 是一个私下分发的 Chrome unpacked extension。它不依赖 Chrome W
 
 每一台使用插件的电脑只需要配置一次。朋友不需要 GitHub、GitHub Desktop、Node 或 Python。
 
-重要：不要把 Chrome 加载目录指向 GitHub Desktop 管理的源码仓库。请使用一个独立、稳定的安装目录，例如 `~/Applications/float-extension`。后续 updater 会替换这个安装目录里的文件。
+重要：不要把 Chrome 加载目录指向 GitHub Desktop 管理的源码仓库。请使用一个独立、稳定的安装目录，例如 `~/Applications/float-extension`。不建议放在 `~/Desktop`、`~/Documents`、`~/Downloads`、iCloud Drive 或其他可能被 macOS 隐私权限、同步、自动清理影响的目录。后续 updater 会替换这个安装目录里的文件。
 
 1. 下载你提供的初始安装 zip，或从 GitHub Release 下载 `extension-v<version>.zip`。
-2. 解压到稳定目录，例如 `~/Applications/float-extension`。不要放在会被自动清理的位置。
+2. 解压到稳定目录，例如 `~/Applications/float-extension`。确保 `manifest.json` 位于这个目录的第一层。
 3. 打开 Chrome，进入 `chrome://extensions`。
 4. 开启 Developer mode。
-5. 点击 Load unpacked，选择解压后的插件目录。
+5. 点击 Load unpacked，选择解压后的插件目录，例如 `~/Applications/float-extension`。
 6. 在扩展卡片上复制 Extension ID。
 7. 打开终端，进入插件安装目录：
 
@@ -38,7 +38,7 @@ cd ~/Applications/float-extension
 ./scripts/install-native-host-macos.sh <EXTENSION_ID> "$(pwd)"
 ```
 
-完成后，后续这个电脑上的版本更新都可以在插件面板里点击完成。
+完成后，后续这个电脑上的版本更新都可以在页面里的悬浮按钮上完成：右键悬浮按钮打开更新小面板，再点击“检查更新 / 立即更新”。
 
 ## 固定 Extension ID
 
@@ -50,16 +50,17 @@ Native Messaging 的 `allowed_origins` 必须写入准确的 Extension ID。
 
 ## 一键更新流程
 
-1. 打开插件面板。
-2. 面板顶部会显示当前版本。
-3. 点击“检查更新”。
-4. 插件从 GitHub 最新 Release 读取 `latest.json`。
-5. 如果有新版本，会显示版本号、更新说明和“立即更新”按钮。
-6. 点击“立即更新”后，插件通过 Native Messaging 调用本机 updater。
-7. updater 会下载 `extension-v<version>.zip`，校验版本，按需校验 sha256，备份当前目录，替换文件并保留本地配置。
-8. 更新成功后插件会自动 `chrome.runtime.reload()`。
+1. 在任意网页找到 Float 悬浮按钮。
+2. 右键悬浮按钮，打开更新小面板。
+3. 小面板会显示当前版本号和“检查更新”按钮。
+4. 点击“检查更新”。
+5. 插件从 GitHub 最新 Release 读取 `latest.json`。
+6. 如果有新版本，“检查更新”会替换为“立即更新”，并显示版本号和更新说明。
+7. 点击“立即更新”后，插件通过 Native Messaging 调用本机 updater。
+8. updater 会下载 `extension-v<version>.zip`，校验版本，按需校验 sha256，备份当前目录，替换文件并保留本地配置。
+9. 更新成功后，插件会自动 `chrome.runtime.reload()`，并刷新当前页面让新的 content script 生效。
 
-如果自动 reload 后页面里的旧 content script 仍未完全刷新，请到 `chrome://extensions` 点击该扩展的刷新按钮，或刷新当前网页。
+如果自动刷新后页面里的旧 content script 仍未完全更新，请到 `chrome://extensions` 点击该扩展的刷新按钮，或手动刷新当前网页。
 
 ## 发布新版本
 
@@ -115,7 +116,7 @@ https://github.com/xy77/extensionsFloat/releases/latest/download/latest.json
 
 首次安装并配置 Native Host 后，后续更新只需要：
 
-1. 打开插件面板。
+1. 右键页面里的 Float 悬浮按钮，打开更新小面板。
 2. 点击“检查更新”。
 3. 看到新版本后点击“立即更新”。
 
@@ -169,7 +170,7 @@ GITHUB_REPO=xy77/extensionsFloat ./scripts/package-release.sh
 ./scripts/install-native-host-macos.sh <EXTENSION_ID> "$(pwd)"
 ```
 
-如果插件是从 GitHub Desktop 的源码仓库目录加载的，请改用独立安装目录，例如 `~/Applications/float-extension`，重新 Load unpacked 并重新安装 Native Host。updater 不应该直接替换 Git 仓库目录。
+如果插件是从 GitHub Desktop 的源码仓库目录加载的，请改用独立安装目录，例如 `~/Applications/float-extension`，重新 Load unpacked 并重新安装 Native Host。updater 不应该直接替换 Git 仓库目录。也不建议使用 `~/Desktop`、`~/Documents`、`~/Downloads` 或 iCloud Drive 作为插件安装目录。
 
 `extensionDir 不存在或不是目录`
 
@@ -185,7 +186,7 @@ GITHUB_REPO=xy77/extensionsFloat ./scripts/package-release.sh
 
 `更新成功但界面没变化`
 
-打开 `chrome://extensions`，点击扩展卡片上的刷新按钮，然后刷新当前网页。
+通常插件会自动重新加载并刷新当前页面。如果仍然没变化，打开 `chrome://extensions`，点击扩展卡片上的刷新按钮，然后刷新当前网页。
 
 ## Windows 预留
 
