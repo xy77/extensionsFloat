@@ -1166,17 +1166,18 @@
 	    showUpdatePopover();
 	  });
 
-	  function hideUpdatePopoverForPageAction(e) {
-	    const path = e.composedPath();
-	    if (path.includes(updatePopover)) {
-	      return;
-	    }
+	  ['pointerdown', 'click', 'contextmenu'].forEach((eventName) => {
+	    updatePopover.addEventListener(eventName, (e) => {
+	      e.stopPropagation();
+	    });
+	  });
 
+	  function hideUpdatePopoverForPageAction(e) {
 	    hideUpdatePopover();
 	  }
 
-	  document.addEventListener('pointerdown', hideUpdatePopoverForPageAction, true);
-	  document.addEventListener('click', hideUpdatePopoverForPageAction, true);
+	  document.addEventListener('pointerdown', hideUpdatePopoverForPageAction);
+	  document.addEventListener('click', hideUpdatePopoverForPageAction);
 
 	  document.addEventListener('keydown', (e) => {
 	    if (e.key === 'Escape') {
