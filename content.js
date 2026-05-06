@@ -396,38 +396,24 @@
 
 	    #update-popover-row {
 	      display: flex;
+	      flex-direction: column;
 	      align-items: center;
-	      gap: 8px;
+	      gap: 10px;
 	    }
 
-	    #check-update-btn {
-	      margin-left: auto;
+	    #update-popover-actions {
+	      width: 100%;
 	    }
 
-	    #memo-update-footer {
-	      position: relative;
-	      z-index: 20;
-	      display: none;
-	      justify-content: flex-end;
-	      box-sizing: border-box;
-	      padding: 0 10px 10px;
-	      font-family: system-ui, -apple-system, sans-serif;
-	    }
-
-	    #memo-update-footer.show {
-	      display: flex;
+	    #update-popover-actions .update-button {
+	      width: 100%;
 	    }
 
 	    #version-label {
-	      display: inline-flex;
-	      align-items: center;
-	      min-height: 26px;
-	      border: 1px solid rgba(128, 134, 139, 0.18);
-	      border-radius: 999px;
-	      background: rgba(128, 134, 139, 0.08);
+	      display: block;
 	      color: var(--memo-muted-text-color);
-	      padding: 0 10px;
-	      font: 600 12px/1 system-ui, -apple-system, sans-serif;
+	      font: 700 13px/1.2 system-ui, -apple-system, sans-serif;
+	      letter-spacing: 0;
 	      user-select: none;
 	    }
 
@@ -550,8 +536,11 @@
 
 	    <div id="update-popover" aria-hidden="true">
 	      <div id="update-popover-row">
-	        <span id="version-label">版本 --</span>
-	        <button id="check-update-btn" class="update-button" type="button">检查更新</button>
+	        <span id="version-label">--</span>
+	        <div id="update-popover-actions">
+	          <button id="check-update-btn" class="update-button" type="button">检查更新</button>
+	          <button id="update-now-btn" class="update-button primary" type="button" hidden>立即更新</button>
+	        </div>
 	      </div>
 	      <div id="update-status" role="status" aria-live="polite"></div>
 	      <div id="update-changelog"></div>
@@ -579,9 +568,6 @@
 	      </div>
 
 	      <textarea id="editor" spellcheck="false" placeholder=""></textarea>
-	      <div id="memo-update-footer" aria-live="polite">
-	        <button id="update-now-btn" class="update-button primary" type="button" hidden>立即更新</button>
-	      </div>
     </div>
   `;
   shadow.appendChild(wrapper);
@@ -597,7 +583,6 @@
 	    const downloadCancel = shadow.getElementById('download-cancel');
 	    const downloadConfirm = shadow.getElementById('download-confirm');
 	    const updatePopover = shadow.getElementById('update-popover');
-	    const updateFooter = shadow.getElementById('memo-update-footer');
 	    const versionLabel = shadow.getElementById('version-label');
 	    const checkUpdateBtn = shadow.getElementById('check-update-btn');
 	    const updateNowBtn = shadow.getElementById('update-now-btn');
@@ -1170,8 +1155,17 @@
 	    showUpdatePopover();
 	  });
 
-	  document.addEventListener('pointerdown', hideUpdatePopover, true);
-	  document.addEventListener('click', hideUpdatePopover, true);
+	  function hideUpdatePopoverForPageAction(e) {
+	    const path = e.composedPath();
+	    if (path.includes(checkUpdateBtn) || path.includes(updateNowBtn)) {
+	      return;
+	    }
+
+	    hideUpdatePopover();
+	  }
+
+	  document.addEventListener('pointerdown', hideUpdatePopoverForPageAction, true);
+	  document.addEventListener('click', hideUpdatePopoverForPageAction, true);
 
 	  document.addEventListener('keydown', (e) => {
 	    if (e.key === 'Escape') {
@@ -1367,7 +1361,7 @@
 
 	  function syncUpdateActionVisibility() {
 	    const shouldShow = Boolean(latestUpdatePayload);
-	    updateFooter.classList.toggle('show', shouldShow);
+	    checkUpdateBtn.hidden = shouldShow;
 	    updateNowBtn.hidden = !shouldShow;
 	  }
 
@@ -1398,7 +1392,7 @@
 
 	  function updateVersionLabel(version) {
 	    const currentVersion = version || (chrome.runtime.getManifest && chrome.runtime.getManifest().version) || '--';
-	    versionLabel.textContent = `版本 ${currentVersion}`;
+	    versionLabel.textContent = currentVersion;
 	  }
 
 	  function showUpdatePopover() {
