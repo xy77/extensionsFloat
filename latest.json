@@ -1,5 +1,5 @@
 {
-  "version": "1.0.1",
+  "version": "1.0.2",
   "downloadUrl": "https://github.com/xy77/extensionsFloat/releases/download/v1.0.1/extension-v1.0.1.zip",
   "sha256": "",
   "changelog": "Bridge release for the automatic GitHub Actions updater."
