@@ -365,14 +365,14 @@
 	      width: 236px;
 	      box-sizing: border-box;
 	      padding: 12px;
-	      border: 1px solid rgba(128, 134, 139, 0.18);
+	      border: 1px solid rgba(255, 255, 255, 0.34);
 	      border-radius: 12px;
-	      background: var(--memo-modal-bg);
+	      background: linear-gradient(180deg, rgba(255, 255, 255, 0.68), rgba(255, 255, 255, 0.42));
 	      color: var(--memo-text-color);
-	      box-shadow: 0 14px 32px -18px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.24) inset;
+	      box-shadow: 0 18px 38px -20px rgba(0, 0, 0, 0.48), 0 0 0 1px rgba(255, 255, 255, 0.28) inset;
 	      font-family: system-ui, -apple-system, sans-serif;
-	      backdrop-filter: blur(10px);
-	      -webkit-backdrop-filter: blur(10px);
+	      backdrop-filter: blur(18px) saturate(1.35);
+	      -webkit-backdrop-filter: blur(18px) saturate(1.35);
 	    }
 
 	    #update-popover::before {
@@ -383,11 +383,22 @@
 	      width: 12px;
 	      height: 12px;
 	      transform: rotate(45deg);
-	      border-left: 1px solid rgba(128, 134, 139, 0.18);
-	      border-top: 1px solid rgba(128, 134, 139, 0.18);
-	      background: var(--memo-modal-bg);
-	      backdrop-filter: blur(10px);
-	      -webkit-backdrop-filter: blur(10px);
+	      border-left: 1px solid rgba(255, 255, 255, 0.34);
+	      border-top: 1px solid rgba(255, 255, 255, 0.34);
+	      background: rgba(255, 255, 255, 0.62);
+	      backdrop-filter: blur(18px) saturate(1.35);
+	      -webkit-backdrop-filter: blur(18px) saturate(1.35);
+	    }
+
+	    #wrapper[data-theme="dark"] #update-popover {
+	      border-color: rgba(160, 210, 255, 0.28);
+	      background: linear-gradient(180deg, rgba(24, 25, 32, 0.72), rgba(24, 25, 32, 0.46));
+	      box-shadow: 0 18px 42px -20px rgba(0, 0, 0, 0.72), 0 0 0 1px rgba(160, 210, 255, 0.14) inset;
+	    }
+
+	    #wrapper[data-theme="dark"] #update-popover::before {
+	      border-color: rgba(160, 210, 255, 0.28);
+	      background: rgba(24, 25, 32, 0.66);
 	    }
 
 	    #update-popover.show {
@@ -1157,7 +1168,7 @@
 
 	  function hideUpdatePopoverForPageAction(e) {
 	    const path = e.composedPath();
-	    if (path.includes(checkUpdateBtn) || path.includes(updateNowBtn)) {
+	    if (path.includes(updatePopover)) {
 	      return;
 	    }
 
