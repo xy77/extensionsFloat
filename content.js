@@ -513,7 +513,7 @@
 
 	      <div id="memo-toolbar">
 	        <span id="version-label">版本 --</span>
-	        <button id="check-update-btn" class="update-button" type="button">检查更新</button>
+	        <button id="check-update-btn" class="update-button" type="button">检查更新 3</button>
 	        <button id="update-now-btn" class="update-button primary" type="button" hidden>立即更新</button>
 	        <div id="update-status" role="status" aria-live="polite"></div>
 	        <div id="update-changelog"></div>
