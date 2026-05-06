@@ -354,17 +354,53 @@
 	      color: var(--memo-action-color);
 	    }
 
-	    #memo-toolbar {
-	      position: relative;
-	      z-index: 20;
+	    #update-popover {
+	      position: absolute;
+	      top: 66px;
+	      right: 0;
+	      z-index: 80;
+	      display: none;
+	      flex-direction: column;
+	      gap: 8px;
+	      width: 270px;
+	      box-sizing: border-box;
+	      padding: 10px;
+	      border: 1px solid var(--memo-input-border);
+	      border-radius: 10px;
+	      background: var(--memo-modal-bg);
+	      color: var(--memo-text-color);
+	      box-shadow: var(--memo-panel-shadow);
+	      font-family: system-ui, -apple-system, sans-serif;
+	      backdrop-filter: blur(10px);
+	      -webkit-backdrop-filter: blur(10px);
+	    }
+
+	    #update-popover.show {
+	      display: flex;
+	    }
+
+	    #update-popover-row {
 	      display: flex;
 	      align-items: center;
-	      flex-wrap: wrap;
 	      gap: 8px;
+	    }
+
+	    #check-update-btn {
+	      margin-left: auto;
+	    }
+
+	    #memo-update-footer {
+	      position: relative;
+	      z-index: 20;
+	      display: none;
+	      justify-content: flex-end;
 	      box-sizing: border-box;
-	      padding: 10px 10px 0;
-	      color: var(--memo-text-color);
+	      padding: 0 10px 10px;
 	      font-family: system-ui, -apple-system, sans-serif;
+	    }
+
+	    #memo-update-footer.show {
+	      display: flex;
 	    }
 
 	    #version-label {
@@ -404,8 +440,8 @@
 
 	    #update-status,
 	    #update-changelog {
-	      flex: 0 0 100%;
 	      box-sizing: border-box;
+	      width: 100%;
 	      color: var(--memo-muted-text-color);
 	      font: 12px/1.45 system-ui, -apple-system, sans-serif;
 	    }
@@ -490,6 +526,15 @@
       </svg>
     </div>
 
+	    <div id="update-popover" aria-hidden="true">
+	      <div id="update-popover-row">
+	        <span id="version-label">版本 --</span>
+	        <button id="check-update-btn" class="update-button" type="button">检查更新</button>
+	      </div>
+	      <div id="update-status" role="status" aria-live="polite"></div>
+	      <div id="update-changelog"></div>
+	    </div>
+
     <div id="panel" class="glass-panel">
       <canvas id="bg-canvas"></canvas>
       
@@ -511,15 +556,10 @@
 	        </div>
 	      </div>
 
-	      <div id="memo-toolbar">
-	        <span id="version-label">版本 --</span>
-	        <button id="check-update-btn" class="update-button" type="button">检查更新</button>
-	        <button id="update-now-btn" class="update-button primary" type="button" hidden>立即更新</button>
-	        <div id="update-status" role="status" aria-live="polite"></div>
-	        <div id="update-changelog"></div>
-	      </div>
-	      
 	      <textarea id="editor" spellcheck="false" placeholder=""></textarea>
+	      <div id="memo-update-footer" aria-live="polite">
+	        <button id="update-now-btn" class="update-button primary" type="button" hidden>立即更新</button>
+	      </div>
     </div>
   `;
   shadow.appendChild(wrapper);
@@ -534,6 +574,8 @@
 	    const downloadExtension = shadow.getElementById('download-extension');
 	    const downloadCancel = shadow.getElementById('download-cancel');
 	    const downloadConfirm = shadow.getElementById('download-confirm');
+	    const updatePopover = shadow.getElementById('update-popover');
+	    const updateFooter = shadow.getElementById('memo-update-footer');
 	    const versionLabel = shadow.getElementById('version-label');
 	    const checkUpdateBtn = shadow.getElementById('check-update-btn');
 	    const updateNowBtn = shadow.getElementById('update-now-btn');
@@ -784,6 +826,31 @@
       }
     }
   });
+
+	  function stopInputEventPropagation(e) {
+	    e.stopPropagation();
+	  }
+
+	  function isolateInputEvents(inputElement) {
+	    [
+	      'keydown',
+	      'keyup',
+	      'keypress',
+	      'beforeinput',
+	      'input',
+	      'compositionstart',
+	      'compositionupdate',
+	      'compositionend',
+	      'paste',
+	      'copy',
+	      'cut'
+	    ].forEach((eventName) => {
+	      inputElement.addEventListener(eventName, stopInputEventPropagation, true);
+	    });
+	  }
+
+	  isolateInputEvents(editor);
+	  isolateInputEvents(downloadNameInput);
 
 	  editor.addEventListener('compositionstart', () => {
 	    isComposing = true;
@@ -1074,6 +1141,25 @@
 	    clickSequenceTimer = setTimeout(flushClickSequence, CLICK_SEQUENCE_DELAY);
 	  });
 
+	  floatBtn.addEventListener('contextmenu', (e) => {
+	    e.preventDefault();
+	    e.stopPropagation();
+	    clearClickSequence();
+	    showUpdatePopover();
+	  });
+
+	  document.addEventListener('pointerdown', (e) => {
+	    if (!e.composedPath().includes(host)) {
+	      hideUpdatePopover();
+	    }
+	  }, true);
+
+	  document.addEventListener('keydown', (e) => {
+	    if (e.key === 'Escape') {
+	      hideUpdatePopover();
+	    }
+	  }, true);
+
     // 3. 拖拽调整大小 (仅允许 l, b, bl)
     function startPanelResize(e, dir) {
       if (e.button !== 0) return;
@@ -1260,8 +1346,15 @@
 	    updateStatus.classList.toggle('success', type === 'success');
 	  }
 
+	  function syncUpdateActionVisibility() {
+	    const shouldShow = Boolean(latestUpdatePayload);
+	    updateFooter.classList.toggle('show', shouldShow);
+	    updateNowBtn.hidden = !shouldShow;
+	  }
+
 	  function setUpdateBusy(isBusy) {
 	    checkUpdateBtn.disabled = isBusy;
+	    syncUpdateActionVisibility();
 	    updateNowBtn.disabled = isBusy || !latestUpdatePayload || (latestNativeHostInfo && latestNativeHostInfo.ok === false);
 	  }
 
@@ -1289,6 +1382,17 @@
 	    versionLabel.textContent = `版本 ${currentVersion}`;
 	  }
 
+	  function showUpdatePopover() {
+	    updateVersionLabel();
+	    updatePopover.classList.add('show');
+	    updatePopover.setAttribute('aria-hidden', 'false');
+	  }
+
+	  function hideUpdatePopover() {
+	    updatePopover.classList.remove('show');
+	    updatePopover.setAttribute('aria-hidden', 'true');
+	  }
+
 	  async function initUpdaterUi() {
 	    updateVersionLabel();
 
@@ -1305,7 +1409,8 @@
 	  async function checkForUpdate() {
 	    latestUpdatePayload = null;
 	    latestNativeHostInfo = null;
-	    updateNowBtn.hidden = true;
+	    syncUpdateActionVisibility();
+	    showUpdatePopover();
 	    setUpdateChangelog('');
 	    setUpdateStatus('正在检查更新...', '');
 	    setUpdateBusy(true);
@@ -1327,7 +1432,8 @@
 
 	      latestUpdatePayload = result.latest;
 	      latestNativeHostInfo = result.nativeHost;
-	      updateNowBtn.hidden = false;
+	      syncUpdateActionVisibility();
+	      showPanel();
 	      setUpdateChangelog(result.latest.changelog);
 
 	      if (latestNativeHostInfo && latestNativeHostInfo.ok === false) {
@@ -1349,10 +1455,12 @@
 
 	  async function updateNow() {
 	    if (!latestUpdatePayload) {
+	      showUpdatePopover();
 	      setUpdateStatus('请先检查更新。', 'error');
 	      return;
 	    }
 
+	    showUpdatePopover();
 	    setUpdateStatus('正在下载并安装更新...', '');
 	    setUpdateBusy(true);
 
@@ -1367,8 +1475,13 @@
 	        return;
 	      }
 
-	      setUpdateStatus('更新成功，正在重新加载插件。如果没有生效，请在 chrome://extensions 中点击刷新。', 'success');
-	      updateNowBtn.hidden = true;
+	      setUpdateStatus('更新成功，正在重新加载插件并刷新页面。', 'success');
+	      latestUpdatePayload = null;
+	      latestNativeHostInfo = null;
+	      syncUpdateActionVisibility();
+	      setTimeout(() => {
+	        window.location.reload();
+	      }, 1200);
 	    } catch (error) {
 	      setUpdateStatus(error.message || '更新失败。', 'error');
 	    } finally {
