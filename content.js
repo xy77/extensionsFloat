@@ -362,7 +362,7 @@
 	      display: none;
 	      flex-direction: column;
 	      gap: 10px;
-	      width: 236px;
+	      width: 150px;
 	      box-sizing: border-box;
 	      padding: 12px;
 	      border: 1px solid rgba(255, 255, 255, 0.34);
