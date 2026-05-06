@@ -743,7 +743,7 @@
 	      return;
 	    }
 
-	    if (isEditorFocused() || isComposing) {
+	    if (isComposing) {
 	      pendingContentSync = {
 	        content: incomingContent,
 	        contentUpdatedAt: incomingContentUpdatedAt
@@ -845,30 +845,47 @@
     }
   });
 
-	  function stopInputEventPropagation(e) {
+	  function handleEditorShortcut(e) {
+	    if (!(e.ctrlKey || e.metaKey)) return false;
+
+	    const key = e.key.toLowerCase();
+	    if (key === 's') {
+	      e.preventDefault();
+	      e.stopPropagation();
+	      handlePreview();
+	      return true;
+	    }
+
+	    if (key === 'd') {
+	      e.preventDefault();
+	      e.stopPropagation();
+	      handleDownload();
+	      return true;
+	    }
+
+	    return false;
+	  }
+
+	  function handleInputKeyboardEvent(e) {
+	    if (e.type === 'keydown' && e.currentTarget === editor && handleEditorShortcut(e)) {
+	      return;
+	    }
+
 	    e.stopPropagation();
 	  }
 
-	  function isolateInputEvents(inputElement) {
+	  function isolateInputKeyboardEvents(inputElement) {
 	    [
 	      'keydown',
 	      'keyup',
-	      'keypress',
-	      'beforeinput',
-	      'input',
-	      'compositionstart',
-	      'compositionupdate',
-	      'compositionend',
-	      'paste',
-	      'copy',
-	      'cut'
+	      'keypress'
 	    ].forEach((eventName) => {
-	      inputElement.addEventListener(eventName, stopInputEventPropagation, true);
+	      inputElement.addEventListener(eventName, handleInputKeyboardEvent, true);
 	    });
 	  }
 
-	  isolateInputEvents(editor);
-	  isolateInputEvents(downloadNameInput);
+	  isolateInputKeyboardEvents(editor);
+	  isolateInputKeyboardEvents(downloadNameInput);
 
 	  editor.addEventListener('compositionstart', () => {
 	    isComposing = true;
@@ -2309,18 +2326,6 @@ createRoot(document.getElementById('root')).render(
 	      editor.focus();
 	    }
 	  });
-
-	  // 快捷键劫持
-  editor.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
-      e.preventDefault();
-      handlePreview();
-    }
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
-      e.preventDefault();
-      handleDownload();
-    }
-  });
 
   // 工具函数
   function debounce(func, wait) {
