@@ -1541,12 +1541,7 @@
 	    if (/<(?:!doctype|html)\b/i.test(t)) return 'html';
 	    if (isReactCode(t)) return 'react';
 	    if (t.startsWith('{') || t.startsWith('[')) {
-	      try {
-	        JSON.parse(t);
-	        return 'json';
-	      } catch (_) {
-	        // 不是合法 JSON 时继续按其他文本格式识别。
-	      }
+	      return 'json';
 	    }
 	    if (isMarkdownText(t)) return 'md';
 	    return 'txt';
@@ -1743,7 +1738,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Markdown Preview</title>
+  <title>Markdown 预览</title>
   <style>
     body {
       margin: 0;
@@ -1826,12 +1821,37 @@
 	      .map(item => item.trim())
 	      .filter(Boolean)
 	      .map(item => {
-	        const parts = item.split(/\s+as\s+/i).map(part => part.trim());
+	        const parts = item.replace(/^type\s+/i, '').split(/\s+as\s+/i).map(part => part.trim());
 	        return {
 	          imported: parts[0],
 	          local: parts[1] || parts[0]
 	        };
-	      });
+	      })
+	      .filter(({ imported, local }) => isValidJsIdentifier(imported) && isValidJsIdentifier(local));
+	  }
+
+	  function isValidJsIdentifier(value) {
+	    return /^[A-Za-z_$][\w$]*$/.test(String(value || ''));
+	  }
+
+	  function parseImportClauseBindings(importClause) {
+	    const clause = String(importClause || '').trim();
+	    const namedMatch = clause.match(/\{([\s\S]*?)\}/);
+	    const namespaceMatch = clause.match(/\*\s+as\s+([A-Za-z_$][\w$]*)/);
+	    const withoutNamed = clause
+	      .replace(/\{[\s\S]*?\}/, '')
+	      .replace(/\*\s+as\s+[A-Za-z_$][\w$]*/, '')
+	      .replace(/^type\s+/i, '')
+	      .split(',')
+	      .map(part => part.trim())
+	      .filter(Boolean);
+	    const defaultLocal = isValidJsIdentifier(withoutNamed[0]) ? withoutNamed[0] : null;
+
+	    return {
+	      defaultLocal,
+	      namespaceLocal: namespaceMatch && isValidJsIdentifier(namespaceMatch[1]) ? namespaceMatch[1] : null,
+	      named: namedMatch ? parseNamedImportSpecifiers(namedMatch[1]) : []
+	    };
 	  }
 
 	  function isCssImportPath(importPath) {
@@ -1848,28 +1868,142 @@
 		  function prepareReactSource(source) {
 		    let prepared = source;
 		    let defaultComponentName = null;
+		    const providedRuntimeNames = new Set([
+		      'Component',
+		      'Fragment',
+		      'PureComponent',
+		      'StrictMode',
+		      'Suspense',
+		      'React',
+		      'ReactDOM',
+		      'ReactDOMClient',
+		      'createContext',
+		      'createRoot',
+		      'forwardRef',
+		      'lazy',
+		      'memo',
+		      'startTransition',
+		      'useCallback',
+		      'useContext',
+		      'useDeferredValue',
+		      'useEffect',
+		      'useId',
+		      'useImperativeHandle',
+		      'useLayoutEffect',
+		      'useMemo',
+		      'useReducer',
+		      'useRef',
+		      'useState',
+		      'useSyncExternalStore',
+		      'useTransition'
+		    ]);
 		    const unsupportedImports = [];
 		    const stylesheetLinks = [];
 		    const missingStyleImports = [];
 		    const importPrelude = [];
 
+		    function addImportPrelude(line, localName) {
+		      if (localName && providedRuntimeNames.has(localName)) return;
+		      importPrelude.push(line);
+		      if (localName) {
+		        providedRuntimeNames.add(localName);
+		      }
+		    }
+
+		    function registerReactImport(importClause) {
+		      const bindings = parseImportClauseBindings(importClause);
+
+		      if (bindings.defaultLocal && bindings.defaultLocal !== 'React') {
+		        addImportPrelude(`const ${bindings.defaultLocal} = React;`, bindings.defaultLocal);
+		      }
+
+		      if (bindings.namespaceLocal && bindings.namespaceLocal !== 'React') {
+		        addImportPrelude(`const ${bindings.namespaceLocal} = React;`, bindings.namespaceLocal);
+		      }
+
+		      bindings.named.forEach(({ imported, local }) => {
+		        if (local === imported && providedRuntimeNames.has(local)) return;
+		        addImportPrelude(`const ${local} = React.${imported};`, local);
+		      });
+		    }
+
+		    function registerReactDomImport(importClause) {
+		      const bindings = parseImportClauseBindings(importClause);
+
+		      if (bindings.defaultLocal && bindings.defaultLocal !== 'ReactDOM' && bindings.defaultLocal !== 'ReactDOMClient') {
+		        addImportPrelude(`const ${bindings.defaultLocal} = ReactDOM;`, bindings.defaultLocal);
+		      }
+
+		      if (bindings.namespaceLocal && bindings.namespaceLocal !== 'ReactDOM' && bindings.namespaceLocal !== 'ReactDOMClient') {
+		        addImportPrelude(`const ${bindings.namespaceLocal} = ReactDOM;`, bindings.namespaceLocal);
+		      }
+
+		      bindings.named.forEach(({ imported, local }) => {
+		        if (imported === 'createRoot') {
+		          if (local !== 'createRoot') {
+		            addImportPrelude(`const ${local} = ReactDOM.createRoot.bind(ReactDOM);`, local);
+		          }
+		          return;
+		        }
+
+		        addImportPrelude(`const ${local} = ReactDOM.${imported};`, local);
+		      });
+		    }
+
+		    function getFallbackImportExpression(imported, local, importPath) {
+		      const normalizedPath = importPath.toLowerCase();
+
+		      if (local === 'motion') return '__ReactPreviewImports.motion';
+		      if (local === 'AnimatePresence') return '__ReactPreviewImports.AnimatePresence';
+		      if (local === 'cva' || /class-variance-authority/.test(normalizedPath)) {
+		        return '__ReactPreviewImports.createClassVariant';
+		      }
+		      if (/^(cn|clsx|classnames|classNames|twMerge)$/.test(local) || /(?:utils|lib\/utils|classnames|clsx|tailwind-merge)/.test(normalizedPath)) {
+		        return '__ReactPreviewImports.combineClassNames';
+		      }
+		      if (/^[A-Z]/.test(local) || /^[A-Z]/.test(imported) || /(?:components|ui|recharts|radix|headlessui|framer-motion)/.test(normalizedPath)) {
+		        return `__ReactPreviewImports.createComponent('${escapeJsSingleQuotedString(local)}')`;
+		      }
+
+		      return `__ReactPreviewImports.createValue('${escapeJsSingleQuotedString(local)}')`;
+		    }
+
+		    function registerUnsupportedRuntimeImport(importClause, importPath) {
+		      const trimmedClause = importClause.trim();
+		      if (/^type\b/i.test(trimmedClause)) return;
+
+		      const bindings = parseImportClauseBindings(trimmedClause);
+
+		      if (bindings.defaultLocal) {
+		        addImportPrelude(`const ${bindings.defaultLocal} = ${getFallbackImportExpression('default', bindings.defaultLocal, importPath)};`, bindings.defaultLocal);
+		      }
+
+		      if (bindings.namespaceLocal) {
+		        addImportPrelude(`const ${bindings.namespaceLocal} = __ReactPreviewImports.createNamespace('${escapeJsSingleQuotedString(bindings.namespaceLocal)}');`, bindings.namespaceLocal);
+		      }
+
+		      bindings.named.forEach(({ imported, local }) => {
+		        addImportPrelude(`const ${local} = ${getFallbackImportExpression(imported, local, importPath)};`, local);
+		      });
+		    }
+
 		    function registerLucideReactImport(importClause) {
 		      const namespaceMatch = importClause.match(/\*\s+as\s+([A-Za-z_$][\w$]*)/);
 		      if (namespaceMatch) {
-		        importPrelude.push(`const ${namespaceMatch[1]} = __ReactPreviewImports.lucideReact || {};`);
+		        addImportPrelude(`const ${namespaceMatch[1]} = __ReactPreviewImports.lucideReact || {};`, namespaceMatch[1]);
 	      }
 
 	      const namedMatch = importClause.match(/\{([\s\S]*?)\}/);
 	      if (namedMatch) {
 	        parseNamedImportSpecifiers(namedMatch[1]).forEach(({ imported, local }) => {
-	          importPrelude.push(`const ${local} = (__ReactPreviewImports.lucideReact && __ReactPreviewImports.lucideReact.${imported}) || __ReactPreviewMissingIcon('${escapeJsSingleQuotedString(imported)}');`);
+	          addImportPrelude(`const ${local} = (__ReactPreviewImports.lucideReact && __ReactPreviewImports.lucideReact.${imported}) || __ReactPreviewMissingIcon('${escapeJsSingleQuotedString(imported)}');`, local);
 	        });
 	      }
 
 	      const withoutNamed = importClause.replace(/\{[\s\S]*?\}/, '').replace(/\*\s+as\s+[A-Za-z_$][\w$]*/, '');
 	      const defaultMatch = withoutNamed.match(/^\s*([A-Za-z_$][\w$]*)\s*,?\s*$/);
 	      if (defaultMatch) {
-	        importPrelude.push(`const ${defaultMatch[1]} = __ReactPreviewImports.lucideReact || {};`);
+	        addImportPrelude(`const ${defaultMatch[1]} = __ReactPreviewImports.lucideReact || {};`, defaultMatch[1]);
 		      }
 		    }
 
@@ -1892,16 +2026,24 @@
 		    });
 		    prepared = prepared.replace(/^\s*import\s+([A-Za-z_$][\w$]*)\s+from\s+['"]([^'"]+\.css(?:\?[^'"]*)?)['"];?\s*$/gm, (_, localName, importPath) => {
 		      registerStyleImport(importPath);
-		      importPrelude.push(`const ${localName} = new Proxy({}, { get: (_, key) => String(key) });`);
+		      addImportPrelude(`const ${localName} = new Proxy({}, { get: (_, key) => String(key) });`, localName);
 		      return '';
 		    });
-		    prepared = prepared.replace(/^\s*import\s+[\s\S]*?\s+from\s+['"](?:react|react-dom|react-dom\/client)['"];?\s*/gm, '');
+		    prepared = prepared.replace(/^\s*import\s+([\s\S]*?)\s+from\s+['"]react['"];?\s*/gm, (_, importClause) => {
+		      registerReactImport(importClause.trim());
+		      return '';
+		    });
+		    prepared = prepared.replace(/^\s*import\s+([\s\S]*?)\s+from\s+['"](?:react-dom|react-dom\/client)['"];?\s*/gm, (_, importClause) => {
+		      registerReactDomImport(importClause.trim());
+		      return '';
+		    });
 	    prepared = prepared.replace(/^\s*import\s+([\s\S]*?)\s+from\s+['"]lucide-react['"];?\s*/gm, (_, importClause) => {
 	      registerLucideReactImport(importClause.trim());
 	      return '';
 	    });
-	    prepared = prepared.replace(/^\s*import\s+[\s\S]*?\s+from\s+['"][^'"]+['"];?\s*/gm, (statement) => {
+	    prepared = prepared.replace(/^\s*import\s+([\s\S]*?)\s+from\s+['"]([^'"]+)['"];?\s*/gm, (statement, importClause, importPath) => {
 	      unsupportedImports.push(statement.trim());
+	      registerUnsupportedRuntimeImport(importClause, importPath);
 	      return '';
 	    });
 
@@ -1934,7 +2076,9 @@
 
 	  function buildReactPreviewHtml(source) {
 	    const prepared = prepareReactSource(source);
-	    const hasManualRender = /\b(createRoot|ReactDOM\.render|ReactDOM\.createRoot)\s*\(/.test(prepared.source);
+	    const hasManualRender = /\bReactDOM\.render\s*\(/.test(prepared.source) ||
+	      /\b(?:ReactDOM\.)?createRoot\s*\([\s\S]{0,500}\)\s*\.render\s*\(/.test(prepared.source) ||
+	      /\b[A-Za-z_$][\w$]*\.render\s*\(\s*</.test(prepared.source);
 	    const unsupportedImportMessage = prepared.unsupportedImports.length
 	      ? `console.warn('React 预览暂时只内置 React/ReactDOM，已忽略这些 import：\\n${prepared.unsupportedImports.map(escapeJsSingleQuotedString).join('\\n')}');`
 	      : '';
@@ -1942,7 +2086,7 @@
 	      .map(href => `<link rel="stylesheet" href="${escapeHtml(href)}">`)
 	      .join('\n  ');
 	    const missingStyleWarning = prepared.missingStyleImports.length
-	      ? `<div id="style-warning">这些本地样式文件无法在 blob 预览页中直接读取：${prepared.missingStyleImports.map(escapeHtml).join('，')}。如果样式仍不对，请把 CSS 改成远程 URL import，或把样式内容直接放进 React 代码生成的 style 标签里。</div>`
+	      ? `<div id="style-warning">这些本地样式文件无法在预览页中直接读取：${prepared.missingStyleImports.map(escapeHtml).join('，')}。如果样式仍不对，请把 CSS 改成远程 URL import，或把样式内容直接放进 React 代码生成的 style 标签里。</div>`
 	      : '';
 	    const sourceWithRuntime = `
 		${unsupportedImportMessage}
@@ -2003,7 +2147,7 @@ createRoot(document.getElementById('root')).render(
 <head>
 	  <meta charset="utf-8">
 	  <meta name="viewport" content="width=device-width, initial-scale=1">
-	  <title>HTML 预览</title>
+	  <title>React 预览</title>
 	  ${stylesheetTags}
 	  <script>
 	    window.tailwind = window.tailwind || {};
@@ -2113,8 +2257,223 @@ createRoot(document.getElementById('root')).render(
 	      };
 	    }
 
+	    function combineClassNames(...values) {
+	      const classes = [];
+
+	      values.forEach((value) => {
+	        if (!value) return;
+
+	        if (typeof value === 'string') {
+	          classes.push(value);
+	          return;
+	        }
+
+	        if (Array.isArray(value)) {
+	          classes.push(combineClassNames(...value));
+	          return;
+	        }
+
+	        if (typeof value === 'object') {
+	          Object.entries(value).forEach(([key, enabled]) => {
+	            if (enabled) classes.push(key);
+	          });
+	        }
+	      });
+
+	      return classes.filter(Boolean).join(' ');
+	    }
+
+	    function filterPreviewDomProps(props) {
+	      const domProps = {};
+	      const allowedProps = new Set([
+	        'id',
+	        'title',
+	        'role',
+	        'type',
+	        'href',
+	        'src',
+	        'alt',
+	        'name',
+	        'target',
+	        'rel',
+	        'placeholder',
+	        'value',
+	        'defaultValue',
+	        'checked',
+	        'defaultChecked',
+	        'disabled',
+	        'htmlFor',
+	        'width',
+	        'height',
+	        'viewBox'
+	      ]);
+
+	      Object.entries(props || {}).forEach(([key, value]) => {
+	        if (key === 'children' || key === 'asChild' || key === 'className' || key === 'style') return;
+	        if (key.startsWith('aria-') || key.startsWith('data-') || allowedProps.has(key) || (/^on[A-Z]/.test(key) && typeof value === 'function')) {
+	          domProps[key] = value;
+	        }
+	      });
+
+	      return domProps;
+	    }
+
+	    function getFallbackTagName(name) {
+	      if (/button|trigger|toggle/i.test(name)) return 'button';
+	      if (/input/i.test(name)) return 'input';
+	      if (/textarea/i.test(name)) return 'textarea';
+	      if (/label/i.test(name)) return 'label';
+	      if (/img|image|avatar/i.test(name)) return 'img';
+	      if (/link/i.test(name)) return 'a';
+	      if (/table/i.test(name)) return 'table';
+	      if (/thead/i.test(name)) return 'thead';
+	      if (/tbody/i.test(name)) return 'tbody';
+	      if (/tr|row/i.test(name)) return 'tr';
+	      if (/th/i.test(name)) return 'th';
+	      if (/td|cell/i.test(name)) return 'td';
+	      return 'div';
+	    }
+
+	    function createPreviewFallbackComponent(name) {
+	      return React.forwardRef(function PreviewFallbackComponent(props, ref) {
+	        const {
+	          children,
+	          className,
+	          style,
+	          asChild,
+	          ...rest
+	        } = props || {};
+	        const domProps = filterPreviewDomProps(rest);
+
+	        if (asChild && React.isValidElement(children)) {
+	          return React.cloneElement(children, {
+	            ...domProps,
+	            ref,
+	            className: combineClassNames(children.props && children.props.className, className),
+	            style: {
+	              ...(children.props && children.props.style),
+	              ...(style || {})
+	            }
+	          });
+	        }
+
+	        if (/^(ResponsiveContainer)$/i.test(name)) {
+	          return React.createElement('div', {
+	            ...domProps,
+	            ref,
+	            className,
+	            style: {
+	              width: '100%',
+	              minHeight: 220,
+	              ...(style || {})
+	            },
+	            'data-preview-component': name
+	          }, children);
+	        }
+
+	        if (/^(LineChart|BarChart|AreaChart|PieChart|ScatterChart|ComposedChart|RadarChart|RadialBarChart)$/i.test(name)) {
+	          return React.createElement('div', {
+	            ...domProps,
+	            ref,
+	            className,
+	            style: {
+	              minHeight: 220,
+	              border: '1px solid rgba(60, 64, 67, 0.18)',
+	              borderRadius: 8,
+	              padding: 12,
+	              ...(style || {})
+	            },
+	            'data-preview-component': name
+	          }, children);
+	        }
+
+	        if (/^(XAxis|YAxis|Tooltip|Legend|CartesianGrid|Line|Bar|Area|Pie|Cell|Scatter|Radar|RadialBar)$/i.test(name)) {
+	          return null;
+	        }
+
+	        const tagName = getFallbackTagName(name);
+	        const fallbackProps = {
+	          ...domProps,
+	          ref,
+	          className,
+	          style,
+	          'data-preview-component': name
+	        };
+
+	        if (tagName === 'button' && !fallbackProps.type) {
+	          fallbackProps.type = 'button';
+	        }
+
+	        if ((tagName === 'input' || tagName === 'img') && children) {
+	          return React.createElement(tagName, fallbackProps);
+	        }
+
+	        return React.createElement(tagName, fallbackProps, children);
+	      });
+	    }
+
+	    function createPreviewNamespace(name) {
+	      return new Proxy({}, {
+	        get(target, prop) {
+	          if (typeof prop !== 'string') return target[prop];
+	          if (prop === 'toString') return () => name;
+	          if (!target[prop]) {
+	            target[prop] = createPreviewFallbackComponent(name + '.' + prop);
+	          }
+	          return target[prop];
+	        }
+	      });
+	    }
+
+	    const motion = new Proxy({}, {
+	      get(target, tagName) {
+	        if (typeof tagName !== 'string') return target[tagName];
+	        if (!target[tagName]) {
+	          target[tagName] = React.forwardRef(function MotionFallback(props, ref) {
+	            const {
+	              children,
+	              className,
+	              style,
+	              initial,
+	              animate,
+	              exit,
+	              transition,
+	              variants,
+	              whileHover,
+	              whileTap,
+	              layout,
+	              ...rest
+	            } = props || {};
+
+	            return React.createElement(tagName, {
+	              ...filterPreviewDomProps(rest),
+	              ref,
+	              className,
+	              style
+	            }, children);
+	          });
+	        }
+	        return target[tagName];
+	      }
+	    });
+
 		    async function loadReactPreviewImports() {
 		      const imports = {
+		        combineClassNames,
+		        createClassVariant(...baseValues) {
+		          return (...variantValues) => combineClassNames(...baseValues, ...variantValues);
+		        },
+		        createComponent: createPreviewFallbackComponent,
+		        createNamespace: createPreviewNamespace,
+		        createValue(name) {
+		          const fallback = (...values) => values.filter(Boolean).join(' ');
+		          fallback.displayName = name;
+		          return fallback;
+		        },
+		        motion,
+		        AnimatePresence({ children }) {
+		          return React.createElement(React.Fragment, null, children);
+		        },
 		        lucideReact: new Proxy({}, {
 		          get(target, prop) {
 		            if (typeof prop !== 'string') return target[prop];
@@ -2269,36 +2628,906 @@ createRoot(document.getElementById('root')).render(
 	    editor.focus();
 	  }
 
-	  function handlePreview() {
-	    const text = editor.value;
-	    const format = detectFormat(text);
-	    let htmlContent = '';
+	  function getPreviewTitle(format) {
+	    const labels = {
+	      html: 'HTML 预览',
+	      react: 'React 预览',
+	      md: 'Markdown 预览',
+	      json: 'JSON 预览',
+	      txt: '文本预览'
+	    };
 
-	    if (format === 'json') {
-	      try {
-	        const parsed = JSON.parse(text);
-	        htmlContent = `<pre style="font-family: monospace; padding: 20px;">${escapeHtml(JSON.stringify(parsed, null, 2))}</pre>`;
-	      } catch (e) {
-	        htmlContent = `<pre style="color: red;">JSON Parse Error: ${escapeHtml(e.message)}</pre><pre>${escapeHtml(text)}</pre>`;
-	      }
-	    } else if (format === 'html') {
-	      htmlContent = text;
-	    } else if (format === 'react') {
-	      htmlContent = buildReactPreviewHtml(text);
-	    } else if (format === 'md') {
-	      htmlContent = buildMarkdownPreviewHtml(text);
-	    } else {
-	      htmlContent = `<pre style="font-family: system-ui; white-space: pre-wrap; padding: 20px; line-height: 1.6;">${escapeHtml(text)}</pre>`;
+	    return labels[format] || labels.txt;
+	  }
+
+	  function buildJsonPreviewHtml(source) {
+	    let body = '';
+
+	    try {
+	      const parsed = JSON.parse(source);
+	      body = `<pre>${escapeHtml(JSON.stringify(parsed, null, 2))}</pre>`;
+	    } catch (error) {
+	      body = `
+	        <div class="error-box">
+	          <strong>JSON Parse Error</strong>
+	          <p>${escapeHtml(error && error.message ? error.message : String(error))}</p>
+	        </div>
+	        <h2>Raw Text</h2>
+	        <pre>${escapeHtml(source)}</pre>
+	      `;
 	    }
 
-    const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    window.open(url, '_blank');
-  }
+	    return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+	  <title>JSON 预览</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      background: #f6f7fb;
+      color: #202124;
+      font: 14px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    h2 {
+      margin: 20px 0 10px;
+      font-size: 15px;
+    }
+    pre {
+      box-sizing: border-box;
+      overflow: auto;
+      margin: 0;
+      padding: 16px;
+      min-height: calc(100vh - 48px);
+      border: 1px solid #d9dee8;
+      border-radius: 8px;
+      background: #ffffff;
+      color: #1f2937;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .error-box {
+      margin: 0 0 14px;
+      padding: 14px 16px;
+      border: 1px solid rgba(185, 28, 28, 0.25);
+      border-radius: 8px;
+      background: #fff5f5;
+      color: #7f1d1d;
+    }
+    .error-box p {
+      margin: 6px 0 0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>${body}</body>
+</html>`;
+	  }
+
+	  function buildTextPreviewHtml(source) {
+	    return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>文本预览</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      background: #f6f7fb;
+      color: #202124;
+    }
+    pre {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 16px;
+      min-height: calc(100vh - 48px);
+      overflow: auto;
+      border: 1px solid #d9dee8;
+      border-radius: 8px;
+      background: #ffffff;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font: 14px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+  </style>
+</head>
+<body><pre>${escapeHtml(source)}</pre></body>
+</html>`;
+	  }
+
+	  function buildPreviewHtmlForSource(source, format) {
+	    if (format === 'json') {
+	      return buildJsonPreviewHtml(source);
+	    }
+
+	    if (format === 'html') {
+	      return source;
+	    }
+
+	    if (format === 'react') {
+	      return buildReactPreviewHtml(source);
+	    }
+
+	    if (format === 'md') {
+	      return buildMarkdownPreviewHtml(source);
+	    }
+
+	    return buildTextPreviewHtml(source);
+	  }
+
+	  const PREVIEW_PAGE_PATH = 'preview.html';
+	  const PREVIEW_MESSAGE_SOURCE = 'float-extension-preview';
+	  const PREVIEW_RENDER_MESSAGE_TYPE = 'render';
+	  const PREVIEW_ACK_MESSAGE_TYPE = 'ack';
+	  const PREVIEW_POST_INTERVAL_MS = 80;
+	  const PREVIEW_POST_MAX_ATTEMPTS = 80;
+
+	  function createPreviewId() {
+	    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+	      return window.crypto.randomUUID();
+	    }
+
+	    return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+	  }
+
+	  function openPreviewPlaceholderWindow() {
+	    const previewWindow = window.open(chrome.runtime.getURL(PREVIEW_PAGE_PATH), '_blank');
+
+	    if (!previewWindow) {
+	      throw new Error('预览窗口被浏览器拦截，请允许此页面打开弹出式窗口后重试。');
+	    }
+
+	    return previewWindow;
+	  }
+
+	  function postPreviewPayload(previewWindow, payload) {
+	    if (!previewWindow || previewWindow.closed) {
+	      throw new Error('预览窗口已经关闭。');
+	    }
+
+	    let acknowledged = false;
+	    let attempts = 0;
+	    const message = {
+	      source: PREVIEW_MESSAGE_SOURCE,
+	      type: PREVIEW_RENDER_MESSAGE_TYPE,
+	      payload
+	    };
+
+	    function cleanup() {
+	      acknowledged = true;
+	      window.removeEventListener('message', handleAck);
+	      window.clearInterval(timer);
+	    }
+
+	    function handleAck(event) {
+	      const data = event.data;
+	      if (!data || typeof data !== 'object') return;
+	      if (data.source !== PREVIEW_MESSAGE_SOURCE || data.type !== PREVIEW_ACK_MESSAGE_TYPE) return;
+	      if (data.id !== payload.id) return;
+	      cleanup();
+	    }
+
+	    function post() {
+	      if (acknowledged) return;
+
+	      if (!previewWindow || previewWindow.closed || attempts >= PREVIEW_POST_MAX_ATTEMPTS) {
+	        cleanup();
+	        return;
+	      }
+
+	      attempts += 1;
+	      previewWindow.postMessage(message, '*');
+	    }
+
+	    window.addEventListener('message', handleAck);
+	    const timer = window.setInterval(post, PREVIEW_POST_INTERVAL_MS);
+	    post();
+	  }
+
+	  function buildPreviewPayload(source) {
+	    const previewSource = typeof source === 'string' ? source : '';
+	    const format = detectFormat(previewSource);
+	    const title = getPreviewTitle(format);
+
+	    return {
+	      id: createPreviewId(),
+	      format,
+	      title,
+	      source: previewSource,
+	      createdAt: Date.now(),
+	      frameHtml: buildPreviewHtmlForSource(previewSource, format)
+	    };
+	  }
+
+	  function buildPreviewErrorPayload(title, message) {
+	    return {
+	      id: createPreviewId(),
+	      format: 'txt',
+	      title: title || '预览失败',
+	      source: message || '预览失败。',
+	      createdAt: Date.now(),
+	      frameHtml: buildTextPreviewHtml(message || '预览失败。')
+	    };
+	  }
+
+	  function renderPreviewIntoWindow(source, previewWindow) {
+	    postPreviewPayload(previewWindow, buildPreviewPayload(source));
+	  }
+
+	  function renderPreviewErrorIntoWindow(previewWindow, title, message) {
+	    try {
+	      if (previewWindow && !previewWindow.closed) {
+	        postPreviewPayload(previewWindow, buildPreviewErrorPayload(title, message));
+	      }
+	    } catch (error) {
+	      console.error('[Float] 打开预览错误页失败：', error);
+	    }
+	  }
+
+	  function handlePreview() {
+	    let previewWindow = null;
+
+	    try {
+	      previewWindow = openPreviewPlaceholderWindow();
+	      renderPreviewIntoWindow(editor.value, previewWindow);
+	    } catch (error) {
+	      console.error('[Float] 打开预览失败：', error);
+	      renderPreviewErrorIntoWindow(previewWindow, '预览失败', error && error.message ? error.message : '打开预览失败。');
+	    }
+	  }
 
 	  function handleDownload() {
 	    openDownloadDialog();
 	  }
+
+	  const GEMINI_HOSTNAME = 'gemini.google.com';
+	  const GEMINI_FULLSCREEN_BUTTON_ATTR = 'data-float-gemini-fullscreen-button';
+	  const GEMINI_FULLSCREEN_TEXT_ATTR = 'data-float-gemini-fullscreen-text';
+	  const GEMINI_FULLSCREEN_BUTTON_LABEL = '全屏';
+	  const GEMINI_FULLSCREEN_STYLE_ID = 'float-gemini-fullscreen-style';
+	  const GEMINI_CODE_MESSAGE_SOURCE = 'float-extension-gemini-canvas';
+	  const GEMINI_CODE_REQUEST_TYPE = 'request-code';
+	  const GEMINI_CODE_RESPONSE_TYPE = 'response-code';
+	  const GEMINI_CODE_RESPONSE_TIMEOUT_MS = 700;
+
+	  function isGeminiPage() {
+	    return window.location.hostname === GEMINI_HOSTNAME;
+	  }
+
+	  function normalizeGeminiLabel(value) {
+	    return String(value || '').replace(/\s+/g, '').trim().toLowerCase();
+	  }
+
+	  function getGeminiControlLabels(element) {
+	    return [
+	      element.textContent,
+	      element.getAttribute('aria-label'),
+	      element.getAttribute('title')
+	    ].map(normalizeGeminiLabel).filter(Boolean);
+	  }
+
+	  function matchesGeminiControlLabel(element, chineseLabel, englishLabel) {
+	    const labels = getGeminiControlLabels(element);
+	    const variants = new Set([
+	      chineseLabel,
+	      englishLabel,
+	      `显示${chineseLabel}`,
+	      `切换到${chineseLabel}`,
+	      `${chineseLabel}视图`,
+	      `${chineseLabel}模式`,
+	      `show${englishLabel}`,
+	      `switchto${englishLabel}`,
+	      `${englishLabel}view`,
+	      `${englishLabel}mode`
+	    ]);
+
+	    return labels.some((label) => variants.has(label));
+	  }
+
+	  function isGeminiCodeControl(element) {
+	    return matchesGeminiControlLabel(element, '代码', 'code');
+	  }
+
+	  function isGeminiPreviewControl(element) {
+	    return matchesGeminiControlLabel(element, '预览', 'preview');
+	  }
+
+	  function isVisiblePageElement(element) {
+	    if (!element || !element.isConnected) return false;
+
+	    const rect = element.getBoundingClientRect();
+	    if (rect.width <= 0 || rect.height <= 0) return false;
+
+	    const style = window.getComputedStyle(element);
+	    return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+	  }
+
+	  function isLikelyGeminiSegmentControl(element) {
+	    return element.matches('button, a, [role="button"], [role="tab"], [role="radio"]') ||
+	      element.tabIndex >= 0 ||
+	      element.hasAttribute('jsaction');
+	  }
+
+	  function getCommonAncestor(left, right) {
+	    const ancestors = new Set();
+	    let current = left;
+
+	    while (current) {
+	      ancestors.add(current);
+	      current = current.parentElement;
+	    }
+
+	    current = right;
+	    while (current) {
+	      if (ancestors.has(current)) return current;
+	      current = current.parentElement;
+	    }
+
+	    return null;
+	  }
+
+	  function getDirectChildOfAncestor(ancestor, descendant) {
+	    let child = descendant;
+
+	    while (child && child.parentElement !== ancestor) {
+	      child = child.parentElement;
+	    }
+
+	    return child;
+	  }
+
+	  function findGeminiCanvasSegmentPair() {
+	    if (!isGeminiPage()) return null;
+
+	    const controls = Array.from(document.querySelectorAll('button, [role="button"], [role="tab"], [role="radio"], [aria-label]'))
+	      .filter((element) => element instanceof HTMLElement)
+	      .filter((element) => !element.hasAttribute(GEMINI_FULLSCREEN_BUTTON_ATTR))
+	      .filter(isLikelyGeminiSegmentControl)
+	      .filter(isVisiblePageElement);
+	    const codeControls = controls.filter(isGeminiCodeControl);
+	    const previewControls = controls.filter(isGeminiPreviewControl);
+	    let bestPair = null;
+	    let bestScore = Infinity;
+
+	    codeControls.forEach((codeControl) => {
+	      previewControls.forEach((previewControl) => {
+	        if (codeControl === previewControl) return;
+	        if (!(codeControl.compareDocumentPosition(previewControl) & Node.DOCUMENT_POSITION_FOLLOWING)) return;
+
+	        const codeRect = codeControl.getBoundingClientRect();
+	        const previewRect = previewControl.getBoundingClientRect();
+	        const centerDelta = Math.abs((codeRect.top + codeRect.height / 2) - (previewRect.top + previewRect.height / 2));
+	        if (centerDelta > 32) return;
+
+	        const horizontalGap = Math.max(0, previewRect.left - codeRect.right);
+	        if (horizontalGap > 260) return;
+
+	        const container = getCommonAncestor(codeControl, previewControl);
+	        if (!container || container === document.body || container === document.documentElement) return;
+	        if (container.querySelector(`[${GEMINI_FULLSCREEN_BUTTON_ATTR}]`)) return;
+
+	        const score = centerDelta * 10 + horizontalGap + Math.max(0, codeRect.top) / 20;
+	        if (score < bestScore) {
+	          bestScore = score;
+	          bestPair = { codeControl, previewControl, container };
+	        }
+	      });
+	    });
+
+	    return bestPair;
+	  }
+
+	  function ensureGeminiFullscreenButtonStyle() {
+	    if (document.getElementById(GEMINI_FULLSCREEN_STYLE_ID)) return;
+
+	    const styleElement = document.createElement('style');
+	    styleElement.id = GEMINI_FULLSCREEN_STYLE_ID;
+	    styleElement.textContent = `
+	      [${GEMINI_FULLSCREEN_BUTTON_ATTR}] {
+	        cursor: pointer !important;
+	        min-width: max-content !important;
+	        white-space: nowrap !important;
+	        user-select: none !important;
+	      }
+
+	      [${GEMINI_FULLSCREEN_BUTTON_ATTR}][${GEMINI_FULLSCREEN_TEXT_ATTR}],
+	      [${GEMINI_FULLSCREEN_BUTTON_ATTR}] [${GEMINI_FULLSCREEN_TEXT_ATTR}],
+	      [${GEMINI_FULLSCREEN_BUTTON_ATTR}][${GEMINI_FULLSCREEN_TEXT_ATTR}] *,
+	      [${GEMINI_FULLSCREEN_BUTTON_ATTR}] [${GEMINI_FULLSCREEN_TEXT_ATTR}] * {
+	        color: var(--float-gemini-fullscreen-text-color, inherit) !important;
+	        font-family: var(--float-gemini-fullscreen-font-family, inherit) !important;
+	        font-size: var(--float-gemini-fullscreen-font-size, inherit) !important;
+	        font-style: var(--float-gemini-fullscreen-font-style, inherit) !important;
+	        font-weight: var(--float-gemini-fullscreen-font-weight, inherit) !important;
+	        line-height: var(--float-gemini-fullscreen-line-height, inherit) !important;
+	        letter-spacing: var(--float-gemini-fullscreen-letter-spacing, inherit) !important;
+	        text-transform: var(--float-gemini-fullscreen-text-transform, inherit) !important;
+	        font-feature-settings: var(--float-gemini-fullscreen-font-feature-settings, normal) !important;
+	        font-variation-settings: var(--float-gemini-fullscreen-font-variation-settings, normal) !important;
+	      }
+
+	      [${GEMINI_FULLSCREEN_BUTTON_ATTR}][data-float-gemini-status="error"],
+	      [${GEMINI_FULLSCREEN_BUTTON_ATTR}][data-float-gemini-status="error"][${GEMINI_FULLSCREEN_TEXT_ATTR}],
+	      [${GEMINI_FULLSCREEN_BUTTON_ATTR}][data-float-gemini-status="error"] [${GEMINI_FULLSCREEN_TEXT_ATTR}] {
+	        color: #b3261e !important;
+	      }
+	    `;
+	    (document.head || document.documentElement).appendChild(styleElement);
+	  }
+
+	  function sanitizeGeminiFullscreenButtonClone(root) {
+	    const elements = [root];
+	    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+	    let node = walker.nextNode();
+
+	    while (node) {
+	      elements.push(node);
+	      node = walker.nextNode();
+	    }
+
+	    elements.forEach((element) => {
+	      Array.from(element.attributes).forEach((attribute) => {
+	        const name = attribute.name.toLowerCase();
+	        if (
+	          name === 'id' ||
+	          name === 'href' ||
+	          name === 'disabled' ||
+	          name === 'aria-selected' ||
+	          name === 'aria-current' ||
+	          name === 'aria-pressed' ||
+	          name.startsWith('js') ||
+	          name.startsWith('data-')
+	        ) {
+	          element.removeAttribute(attribute.name);
+	        }
+	      });
+
+	      const selectedClasses = Array.from(element.classList || []).filter((className) => (
+	        /(^|[-_])(selected|active|checked|current)([-_]|$)/i.test(className)
+	      ));
+
+	      if (selectedClasses.length) {
+	        element.classList.remove(...selectedClasses);
+	      }
+	    });
+	  }
+
+	  function getFirstTextElement(element) {
+	    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+	    let node = walker.nextNode();
+
+	    while (node) {
+	      if (node.nodeValue && node.nodeValue.trim()) {
+	        return node.parentElement || element;
+	      }
+	      node = walker.nextNode();
+	    }
+
+	    return element;
+	  }
+
+	  function applyGeminiFullscreenTextStyle(button, referenceControl) {
+	    const sourceElement = getFirstTextElement(referenceControl);
+	    if (!sourceElement) return;
+
+	    const sourceStyle = window.getComputedStyle(sourceElement);
+	    const styleProperties = {
+	      '--float-gemini-fullscreen-text-color': sourceStyle.color,
+	      '--float-gemini-fullscreen-font-family': sourceStyle.fontFamily,
+	      '--float-gemini-fullscreen-font-size': sourceStyle.fontSize,
+	      '--float-gemini-fullscreen-font-style': sourceStyle.fontStyle,
+	      '--float-gemini-fullscreen-font-weight': sourceStyle.fontWeight,
+	      '--float-gemini-fullscreen-line-height': sourceStyle.lineHeight,
+	      '--float-gemini-fullscreen-letter-spacing': sourceStyle.letterSpacing,
+	      '--float-gemini-fullscreen-text-transform': sourceStyle.textTransform,
+	      '--float-gemini-fullscreen-font-feature-settings': sourceStyle.fontFeatureSettings,
+	      '--float-gemini-fullscreen-font-variation-settings': sourceStyle.fontVariationSettings
+	    };
+
+	    Object.entries(styleProperties).forEach(([property, value]) => {
+	      button.style.setProperty(property, value || 'inherit');
+	    });
+	  }
+
+	  function setGeminiFullscreenButtonLabel(button, label) {
+	    const textNodes = [];
+	    const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT);
+	    let node = walker.nextNode();
+
+	    while (node) {
+	      if (node.nodeValue && node.nodeValue.trim()) {
+	        textNodes.push(node);
+	      }
+	      node = walker.nextNode();
+	    }
+
+	    button.removeAttribute(GEMINI_FULLSCREEN_TEXT_ATTR);
+	    button.querySelectorAll(`[${GEMINI_FULLSCREEN_TEXT_ATTR}]`).forEach((element) => {
+	      element.removeAttribute(GEMINI_FULLSCREEN_TEXT_ATTR);
+	    });
+
+	    if (textNodes.length) {
+	      textNodes[0].nodeValue = label;
+	      if (textNodes[0].parentElement) {
+	        textNodes[0].parentElement.setAttribute(GEMINI_FULLSCREEN_TEXT_ATTR, 'true');
+	      } else {
+	        button.setAttribute(GEMINI_FULLSCREEN_TEXT_ATTR, 'true');
+	      }
+	      textNodes.slice(1).forEach((textNode) => {
+	        textNode.nodeValue = '';
+	      });
+	    } else {
+	      const textElement = document.createElement('span');
+	      textElement.setAttribute(GEMINI_FULLSCREEN_TEXT_ATTR, 'true');
+	      textElement.textContent = label;
+	      button.appendChild(textElement);
+	    }
+
+	    button.setAttribute('aria-label', label);
+	    button.setAttribute('title', label);
+	  }
+
+	  function flashGeminiFullscreenButtonLabel(button, label, type = '') {
+	    setGeminiFullscreenButtonLabel(button, label);
+	    button.dataset.floatGeminiStatus = type;
+
+	    window.setTimeout(() => {
+	      if (!button.isConnected) return;
+	      setGeminiFullscreenButtonLabel(button, GEMINI_FULLSCREEN_BUTTON_LABEL);
+	      delete button.dataset.floatGeminiStatus;
+	    }, 1400);
+	  }
+
+	  function getGeminiButtonInsertionPoint(pair) {
+	    if (pair.codeControl.parentElement && pair.codeControl.parentElement === pair.previewControl.parentElement) {
+	      return {
+	        parent: pair.previewControl.parentElement,
+	        before: pair.previewControl
+	      };
+	    }
+
+	    const codeChild = getDirectChildOfAncestor(pair.container, pair.codeControl);
+	    const previewChild = getDirectChildOfAncestor(pair.container, pair.previewControl);
+
+	    if (codeChild && previewChild && codeChild.parentElement === previewChild.parentElement) {
+	      return {
+	        parent: previewChild.parentElement,
+	        before: previewChild
+	      };
+	    }
+
+	    return {
+	      parent: pair.previewControl.parentElement,
+	      before: pair.previewControl
+	    };
+	  }
+
+	  function createGeminiFullscreenButton(referenceControl) {
+	    const button = referenceControl.cloneNode(true);
+	    sanitizeGeminiFullscreenButtonClone(button);
+	    button.setAttribute(GEMINI_FULLSCREEN_BUTTON_ATTR, 'true');
+	    if (!button.getAttribute('role') && !(button instanceof HTMLButtonElement)) {
+	      button.setAttribute('role', 'button');
+	    }
+	    button.setAttribute('tabindex', '0');
+	    setGeminiFullscreenButtonLabel(button, GEMINI_FULLSCREEN_BUTTON_LABEL);
+	    applyGeminiFullscreenTextStyle(button, referenceControl);
+
+	    if (button instanceof HTMLButtonElement) {
+	      button.type = 'button';
+	      button.disabled = false;
+	    }
+
+	    ['pointerdown', 'mousedown', 'mouseup', 'dblclick', 'contextmenu'].forEach((eventName) => {
+	      button.addEventListener(eventName, (event) => {
+	        event.stopPropagation();
+	      }, true);
+	    });
+
+	    button.addEventListener('click', (event) => {
+	      event.preventDefault();
+	      event.stopImmediatePropagation();
+	      previewGeminiCanvasCode(button);
+	    }, true);
+
+	    button.addEventListener('keydown', (event) => {
+	      if (event.key !== 'Enter' && event.key !== ' ') {
+	        event.stopPropagation();
+	        return;
+	      }
+
+	      event.preventDefault();
+	      event.stopImmediatePropagation();
+	      previewGeminiCanvasCode(button);
+	    }, true);
+
+	    return button;
+	  }
+
+	  function injectGeminiCanvasFullscreenButton() {
+	    const pair = findGeminiCanvasSegmentPair();
+	    if (!pair) return;
+
+	    const insertionPoint = getGeminiButtonInsertionPoint(pair);
+	    if (!insertionPoint.parent || insertionPoint.parent.querySelector(`[${GEMINI_FULLSCREEN_BUTTON_ATTR}]`)) return;
+
+	    ensureGeminiFullscreenButtonStyle();
+	    const button = createGeminiFullscreenButton(pair.codeControl);
+	    insertionPoint.parent.insertBefore(button, insertionPoint.before);
+	  }
+
+	  function getGeminiCodeRoot(anchorElement) {
+	    let current = anchorElement.parentElement;
+
+	    while (current && current !== document.body) {
+	      if (current.querySelector('textarea, [contenteditable="true"], pre, code, .monaco-editor, .cm-editor, .CodeMirror')) {
+	        return current;
+	      }
+	      current = current.parentElement;
+	    }
+
+	    return document.body;
+	  }
+
+	  function normalizeExtractedGeminiCode(text) {
+	    const normalized = String(text || '')
+	      .replace(/\u00a0/g, ' ')
+	      .replace(/\r\n?/g, '\n')
+	      .trim();
+
+	    return /^\[object .+\]$/.test(normalized) ? '' : normalized;
+	  }
+
+	  function getElementContextText(element) {
+	    return [
+	      element.getAttribute('aria-label'),
+	      element.getAttribute('placeholder'),
+	      element.getAttribute('data-placeholder'),
+	      element.getAttribute('title'),
+	      element.closest('[aria-label]') && element.closest('[aria-label]').getAttribute('aria-label')
+	    ].filter(Boolean).join(' ').toLowerCase();
+	  }
+
+	  function isLikelyGeminiPromptInput(element) {
+	    const context = getElementContextText(element);
+	    return /ask gemini|prompt|message|send|向.*gemini|问问|提问|输入提示|发送消息|发送/.test(context);
+	  }
+
+	  function getJoinedLineText(root, selector) {
+	    const lines = Array.from(root.querySelectorAll(selector))
+	      .map((line) => normalizeExtractedGeminiCode(line.textContent))
+	      .filter(Boolean);
+
+	    return lines.join('\n');
+	  }
+
+	  function collectGeminiCodeCandidates(root, pageCandidates = []) {
+	    const candidates = [];
+	    const seenElements = new Set();
+	    const seenTexts = new Set();
+
+	    function addCandidate(element, text, source, priority) {
+	      if (element && seenElements.has(element)) return;
+
+	      const normalized = normalizeExtractedGeminiCode(text);
+	      if (!normalized || seenTexts.has(normalized)) return;
+
+	      if (element) {
+	        seenElements.add(element);
+	      }
+	      seenTexts.add(normalized);
+	      candidates.push({
+	        element,
+	        text: normalized,
+	        source,
+	        priority,
+	        isFullModel: /model|state-doc|getvalue|codemirror|monaco/i.test(source)
+	      });
+	    }
+
+	    pageCandidates.forEach((candidate) => {
+	      if (!candidate || typeof candidate !== 'object') return;
+
+	      const priority = typeof candidate.priority === 'number' ? candidate.priority : 180;
+	      addCandidate(null, candidate.text, `page-${candidate.source || 'model'}`, priority);
+	    });
+
+	    root.querySelectorAll('.monaco-editor').forEach((monacoEditor) => {
+	      addCandidate(monacoEditor, getJoinedLineText(monacoEditor, '.view-lines .view-line'), 'monaco-visible-lines', 120);
+	      const monacoTextarea = monacoEditor.querySelector('textarea');
+	      if (monacoTextarea) {
+	        addCandidate(monacoTextarea, monacoTextarea.value, 'monaco-textarea', 80);
+	      }
+	    });
+
+	    root.querySelectorAll('.cm-editor, .CodeMirror').forEach((codeMirrorEditor) => {
+	      addCandidate(codeMirrorEditor, getJoinedLineText(codeMirrorEditor, '.cm-line, .CodeMirror-line'), 'codemirror-visible-lines', 115);
+	      const codeMirrorContent = codeMirrorEditor.querySelector('.cm-content, .CodeMirror-code');
+	      if (codeMirrorContent) {
+	        addCandidate(codeMirrorContent, codeMirrorContent.textContent, 'codemirror-content', 95);
+	      }
+	    });
+
+	    root.querySelectorAll('textarea').forEach((textarea) => {
+	      addCandidate(textarea, textarea.value, 'textarea', 85);
+	    });
+
+	    root.querySelectorAll('pre code, pre, code').forEach((codeElement) => {
+	      addCandidate(codeElement, codeElement.textContent, 'code-block', 75);
+	    });
+
+	    root.querySelectorAll('[contenteditable="true"]').forEach((editableElement) => {
+	      if (editableElement.closest('.cm-editor, .CodeMirror')) return;
+	      addCandidate(editableElement, editableElement.textContent, 'contenteditable', 65);
+	    });
+
+	    return candidates;
+	  }
+
+	  function looksLikePreviewableCode(text) {
+	    return /<(!doctype|html|head|body|script|style|div|section|canvas|svg)\b/i.test(text) ||
+	      /\b(import|export|function|const|let|var|class|return)\b/.test(text) ||
+	      /=>|<\/[a-z][^>]*>|\bReact\b|\buseState\b|\bcreateRoot\b/.test(text) ||
+	      /^\s*[{[]/.test(text) ||
+	      /^#{1,6}\s+\S/m.test(text) ||
+	      /```/.test(text);
+	  }
+
+	  function scoreGeminiCodeCandidate(candidate, anchorElement) {
+	    const text = candidate.text;
+	    const format = detectFormat(text);
+	    let score = candidate.priority;
+
+	    score += Math.min(text.length, 10000) / 25;
+
+	    if (candidate.isFullModel) {
+	      score += 180;
+	    }
+
+	    if (format !== 'txt') {
+	      score += 90;
+	    } else if (looksLikePreviewableCode(text)) {
+	      score += 45;
+	    }
+
+	    if (!candidate.element) {
+	      score += 35;
+	    } else if (isVisiblePageElement(candidate.element)) {
+	      score += 25;
+	    } else {
+	      score -= 20;
+	    }
+
+	    if (candidate.element && isLikelyGeminiPromptInput(candidate.element)) {
+	      score -= 500;
+	    }
+
+	    if (anchorElement && candidate.element && candidate.element.getBoundingClientRect) {
+	      const anchorRect = anchorElement.getBoundingClientRect();
+	      const candidateRect = candidate.element.getBoundingClientRect();
+	      const verticalDistance = Math.abs(candidateRect.top - anchorRect.bottom);
+	      score += Math.max(0, 200 - Math.min(verticalDistance, 200)) / 4;
+
+	      if (candidateRect.top >= anchorRect.top - 24) {
+	        score += 20;
+	      }
+	    }
+
+	    if (text.length < 10 && format === 'txt') {
+	      score -= 120;
+	    }
+
+	    return score;
+	  }
+
+	  function requestGeminiCanvasCodeFromPage() {
+	    return new Promise((resolve) => {
+	      if (!isGeminiPage()) {
+	        resolve([]);
+	        return;
+	      }
+
+	      const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+	      const cleanup = () => {
+	        window.removeEventListener('message', handleResponse);
+	      };
+	      const timer = window.setTimeout(() => {
+	        cleanup();
+	        resolve([]);
+	      }, GEMINI_CODE_RESPONSE_TIMEOUT_MS);
+
+	      function handleResponse(event) {
+	        const data = event.data;
+	        if (event.source !== window || !data || typeof data !== 'object') return;
+	        if (data.source !== GEMINI_CODE_MESSAGE_SOURCE) return;
+	        if (data.type !== GEMINI_CODE_RESPONSE_TYPE || data.requestId !== requestId) return;
+
+	        window.clearTimeout(timer);
+	        cleanup();
+	        resolve(Array.isArray(data.candidates) ? data.candidates : []);
+	      }
+
+	      window.addEventListener('message', handleResponse);
+	      window.postMessage({
+	        source: GEMINI_CODE_MESSAGE_SOURCE,
+	        type: GEMINI_CODE_REQUEST_TYPE,
+	        requestId
+	      }, '*');
+	    });
+	  }
+
+	  async function readGeminiCanvasCode(anchorElement) {
+	    const root = getGeminiCodeRoot(anchorElement);
+	    const pageCandidates = await requestGeminiCanvasCodeFromPage();
+	    const candidates = collectGeminiCodeCandidates(root, pageCandidates);
+	    const rankedCandidates = candidates
+	      .map((candidate) => ({
+	        ...candidate,
+	        score: scoreGeminiCodeCandidate(candidate, anchorElement)
+	      }))
+	      .sort((left, right) => right.score - left.score);
+	    const bestCandidate = rankedCandidates[0];
+
+	    if (!bestCandidate || bestCandidate.score < 20) {
+	      throw new Error('没有找到可预览的 Canvas 代码。请确认 Gemini Canvas 已打开，并且代码内容已经渲染出来。');
+	    }
+
+	    return bestCandidate.text;
+	  }
+
+	  async function previewGeminiCanvasCode(button) {
+	    let previewWindow = null;
+
+	    try {
+	      setGeminiFullscreenButtonLabel(button, '读取中');
+	      previewWindow = openPreviewPlaceholderWindow();
+	      const code = await readGeminiCanvasCode(button);
+	      setEditorValuePreservingSelection(code);
+	      recordEditorContent(code);
+	      renderPreviewIntoWindow(code, previewWindow);
+	      flashGeminiFullscreenButtonLabel(button, '已打开');
+	      console.info('[Float] 已读取 Gemini Canvas 代码全文并打开全屏预览。');
+	    } catch (error) {
+	      const message = error && error.message ? error.message : '读取 Gemini Canvas 代码失败。';
+	      console.warn(`[Float] ${message}`);
+	      renderPreviewErrorIntoWindow(previewWindow, '预览失败', message);
+	      flashGeminiFullscreenButtonLabel(button, '读取失败', 'error');
+	    }
+	  }
+
+	  function initGeminiCanvasFullscreenInjection() {
+	    if (!isGeminiPage()) return;
+
+	    let scheduled = false;
+	    const scheduleInjection = () => {
+	      if (scheduled) return;
+	      scheduled = true;
+	      requestAnimationFrame(() => {
+	        scheduled = false;
+	        injectGeminiCanvasFullscreenButton();
+	      });
+	    };
+
+	    scheduleInjection();
+
+	    const observer = new MutationObserver(scheduleInjection);
+	    observer.observe(document.documentElement, {
+	      childList: true,
+	      subtree: true
+	    });
+
+	    window.addEventListener('pagehide', () => {
+	      observer.disconnect();
+	    }, { once: true });
+	  }
+
+	  initGeminiCanvasFullscreenInjection();
 
 	  downloadCancel.addEventListener('click', () => {
 	    hideDownloadDialog();
