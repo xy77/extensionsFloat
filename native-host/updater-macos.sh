@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -uo pipefail
 
 HOST_VERSION="1.1.0-macos"
@@ -118,6 +118,14 @@ normalize_extension_dir() {
   fi
 
   (cd "$extension_dir" && pwd -P)
+}
+
+assert_not_git_worktree() {
+  local extension_dir="$1"
+
+  if [[ -e "$extension_dir/.git" ]]; then
+    fail "EXTENSION_DIR_IS_GIT_REPO" "extensionDir 指向 Git 仓库。请把插件加载到一个独立安装目录，再重新安装 Native Host，避免 updater 覆盖源码仓库。"
+  fi
 }
 
 normalize_semver() {
@@ -261,6 +269,7 @@ handle_check() {
 
   current_version="$(get_json_value_or_empty "currentVersion" "$message_file")"
   extension_dir="$(normalize_extension_dir "$(get_json_value_or_empty "extensionDir" "$message_file")")"
+  assert_not_git_worktree "$extension_dir"
 
   body="{\"ok\":true,\"hostVersion\":\"$(json_escape "$HOST_VERSION")\",\"platform\":\"darwin\",\"extensionDir\":\"$(json_escape "$extension_dir")\",\"currentVersion\":\"$(json_escape "$current_version")\",\"message\":\"ready\"}"
   respond_ok "$body"
@@ -278,6 +287,8 @@ handle_update() {
   sha256="$(get_json_value_or_empty "sha256" "$message_file" | /usr/bin/tr '[:upper:]' '[:lower:]')"
   extension_dir="$(normalize_extension_dir "$(get_json_value_or_empty "extensionDir" "$message_file")")"
   backup_dir=""
+
+  assert_not_git_worktree "$extension_dir"
 
   comparison="$(compare_semver "$latest_version" "$current_version")"
   if (( comparison <= 0 )); then

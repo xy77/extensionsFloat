@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
 HOST_DIR="$(cd "$(dirname "$0")" && pwd)"
