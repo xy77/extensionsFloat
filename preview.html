@@ -7,6 +7,7 @@
   <style>
     html,
     body {
+      position: relative;
       width: 100%;
       height: 100%;
       margin: 0;
@@ -18,20 +19,25 @@
 
     #preview-frame {
       display: block;
+      position: absolute;
+      inset: 0;
       width: 100%;
       height: 100%;
       border: 0;
       background: #ffffff;
+      visibility: hidden;
     }
 
     #preview-status {
-      display: grid;
-      place-items: center;
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
       box-sizing: border-box;
       margin: 0;
       padding: 24px;
-      width: 100%;
-      height: 100%;
       color: #5f6368;
       background: #f6f7fb;
       white-space: pre-wrap;
@@ -39,12 +45,27 @@
       font: 14px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
 
+    #preview-status::before {
+      content: "";
+      width: 18px;
+      height: 18px;
+      box-sizing: border-box;
+      border: 2px solid rgba(95, 99, 104, 0.22);
+      border-top-color: #5f6368;
+      border-radius: 50%;
+      animation: preview-loading-spin 0.8s linear infinite;
+    }
+
+    body.has-preview #preview-frame {
+      visibility: visible;
+    }
+
     body.has-preview #preview-status {
       display: none;
     }
 
     body.has-error #preview-frame {
-      display: none;
+      visibility: hidden;
     }
 
     body.has-error #preview-status {
@@ -55,11 +76,21 @@
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: 13px;
     }
+
+    body.has-error #preview-status::before {
+      display: none;
+    }
+
+    @keyframes preview-loading-spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
   </style>
 </head>
 <body>
   <iframe id="preview-frame" title="预览内容" sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"></iframe>
-  <pre id="preview-status">正在等待预览数据...</pre>
+  <pre id="preview-status">Loading...</pre>
   <script src="preview.js"></script>
 </body>
 </html>

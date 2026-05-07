@@ -3,12 +3,14 @@
   const PREVIEW_RENDER_MESSAGE_TYPE = 'render';
   const PREVIEW_ACK_MESSAGE_TYPE = 'ack';
   const PAYLOAD_TIMEOUT_MS = 5000;
+  const LOADING_MESSAGE = 'Loading...';
 
   const frame = document.getElementById('preview-frame');
   const status = document.getElementById('preview-status');
 
   let hasPayload = false;
   let lastPayloadId = '';
+  let pendingPayloadId = '';
 
   function setTitle(title) {
     const nextTitle = title || '预览';
@@ -17,9 +19,10 @@
   }
 
   function showStatus(message, isError) {
+    pendingPayloadId = '';
     document.body.classList.toggle('has-preview', false);
     document.body.classList.toggle('has-error', Boolean(isError));
-    status.textContent = message || (isError ? '预览失败。' : '正在等待预览数据...');
+    status.textContent = message || (isError ? '预览失败。' : LOADING_MESSAGE);
   }
 
   function renderPayload(payload) {
@@ -32,10 +35,10 @@
 
     hasPayload = true;
     lastPayloadId = payload.id || '';
+    pendingPayloadId = lastPayloadId || String(Date.now());
     setTitle(payload.title);
-    document.body.classList.remove('has-error');
-    document.body.classList.add('has-preview');
-    status.textContent = '';
+    document.body.classList.remove('has-error', 'has-preview');
+    status.textContent = LOADING_MESSAGE;
     frame.srcdoc = payload.frameHtml || '';
   }
 
@@ -63,6 +66,15 @@
       event.preventDefault();
       window.close();
     }
+  });
+
+  frame.addEventListener('load', () => {
+    if (!pendingPayloadId) return;
+
+    pendingPayloadId = '';
+    document.body.classList.remove('has-error');
+    document.body.classList.add('has-preview');
+    status.textContent = '';
   });
 
   window.setTimeout(() => {
