@@ -72,6 +72,7 @@ Native Messaging 的 `allowed_origins` 必须写入准确的 Extension ID。
 2. 在 GitHub Desktop 里写 commit message，例如 `Release v1.0.6`。
 3. 点击 Commit to main。
 4. 点击 Push origin。
+5. GitHub Actions 发布完成后，在浏览器里右键 Float 悬浮按钮，点击“检查更新”。
 
 push 后 GitHub Actions 会自动：
    - 读取 `manifest.json` 的版本号
@@ -84,6 +85,13 @@ push 后 GitHub Actions 会自动：
 正常发布新版本时，不需要修改根目录 `latest.json`，也不需要运行 `scripts/package-release.sh`。根目录 `latest.json` 只用于旧版过渡；1.0.1 之后的插件默认读取 GitHub latest Release 的 `latest.json`。
 
 如果当前版本的 tag 已经存在，Actions 会跳过发布，避免重复创建 Release。
+
+简化流程就是：
+
+1. 修改 `manifest.json`。
+2. Git commit。
+3. Git push。
+4. 点“检查更新”。
 
 发布进度可以在仓库的 Actions 页面查看：
 

@@ -1,13 +1,81 @@
 // content.js
 (function () {
+  const EXTERNAL_PREVIEW_URL = 'https://xy77.github.io/zen/preview.html';
+  const EXTERNAL_PREVIEW_ORIGIN = 'https://xy77.github.io';
+  const EXTERNAL_PREVIEW_STORAGE_KEY = 'zen_preview_html';
+  const PREVIEW_MESSAGE_SOURCE = 'float-extension-preview';
+  const PREVIEW_RENDER_MESSAGE_TYPE = 'render';
+  const PREVIEW_ACK_MESSAGE_TYPE = 'ack';
+
+  function isExternalPreviewPage() {
+    return window.location.href.split('#')[0].split('?')[0] === EXTERNAL_PREVIEW_URL;
+  }
+
+  function installExternalPreviewReceiver() {
+    if (window.__float_external_preview_receiver__) return;
+    window.__float_external_preview_receiver__ = true;
+
+    function renderExternalPreviewHtml(htmlContent) {
+      const content = typeof htmlContent === 'string' ? htmlContent : '';
+      const titleMatch = content.match(/<title>([\s\S]*?)<\/title>/i);
+
+      localStorage.setItem(EXTERNAL_PREVIEW_STORAGE_KEY, content);
+      document.open();
+      document.write(content);
+      document.close();
+
+      if (titleMatch && titleMatch[1]) {
+        document.title = titleMatch[1].trim();
+      }
+    }
+
+    function renderExternalPreviewError(message) {
+      const safeMessage = String(message || '预览失败。')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+
+      document.body.innerHTML = `<h2>预览失败</h2><pre style="white-space: pre-wrap;">${safeMessage}</pre>`;
+    }
+
+    window.addEventListener('message', (event) => {
+      const data = event.data;
+      if (!data || typeof data !== 'object') return;
+      if (data.source !== PREVIEW_MESSAGE_SOURCE || data.type !== PREVIEW_RENDER_MESSAGE_TYPE) return;
+
+      try {
+        renderExternalPreviewHtml(data.payload && data.payload.frameHtml);
+      } catch (error) {
+        renderExternalPreviewError(error && error.message ? error.message : '无法写入预览内容。');
+      }
+
+      if (event.source && data.payload && data.payload.id) {
+        event.source.postMessage({
+          source: PREVIEW_MESSAGE_SOURCE,
+          type: PREVIEW_ACK_MESSAGE_TYPE,
+          id: data.payload.id
+        }, event.origin || '*');
+      }
+    });
+  }
+
+  if (isExternalPreviewPage()) {
+    installExternalPreviewReceiver();
+    return;
+  }
+
   // 防止重复注入
   if (window.__glass_memo_injected__) return;
   window.__glass_memo_injected__ = true;
 
 	  const STORAGE_KEY = 'glass_memo_state';
+	  const UPDATE_BADGE_STORAGE_KEY = 'float_update_badge_state';
 	  const MIN_WIDTH = 300;
 	  const MIN_HEIGHT = 200;
 	  const CLICK_SEQUENCE_DELAY = 260;
+	  const DAILY_UPDATE_CHECK_HOUR = 13;
 
   // 初始化宿主容器和 Shadow DOM
   const host = document.createElement('div');
@@ -119,6 +187,24 @@
       animation: memo-icon-breathe 3.2s ease-in-out infinite;
       will-change: transform, filter, opacity;
     }
+
+	    #update-badge {
+	      position: absolute;
+	      top: 3px;
+	      right: 3px;
+	      z-index: 2;
+	      width: 11px;
+	      height: 11px;
+	      display: none;
+	      border-radius: 50%;
+	      background: #e5483f;
+	      box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.92), 0 4px 10px rgba(229, 72, 63, 0.34);
+	      pointer-events: none;
+	    }
+
+	    #update-badge.show {
+	      display: block;
+	    }
 
     @keyframes memo-button-breathe {
       0%, 100% {
@@ -533,6 +619,7 @@
     wrapper.innerHTML = `
     <div id="drag-guard"></div>
       <div id="float-btn">
+      <span id="update-badge" aria-hidden="true"></span>
       <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
         <path d="M12.0001 1.6001C12.0001 7.34385 16.6563 12.0001 22.4001 12.0001C16.6563 12.0001 12.0001 16.6563 12.0001 22.4001C12.0001 16.6563 7.34385 12.0001 1.6001 12.0001C7.34385 12.0001 12.0001 7.34385 12.0001 1.6001Z" fill="url(#gemini-gradient)" />
         <defs>
@@ -584,6 +671,7 @@
   shadow.appendChild(wrapper);
 
     const floatBtn = shadow.getElementById('float-btn');
+	    const updateBadge = shadow.getElementById('update-badge');
 	    const panel = shadow.getElementById('panel');
 	    const editor = shadow.getElementById('editor');
 	    const canvas = shadow.getElementById('bg-canvas');
@@ -788,6 +876,77 @@
 		    saveState();
 		  }
 
+		  function parseSemverParts(version) {
+		    return String(version || '')
+		      .trim()
+		      .replace(/^v/i, '')
+		      .split('.')
+		      .map(part => {
+		        const match = part.match(/^\d+/);
+		        return match ? Number(match[0]) : 0;
+		      });
+		  }
+
+		  function compareSemverValues(left, right) {
+		    const leftParts = parseSemverParts(left);
+		    const rightParts = parseSemverParts(right);
+		    const length = Math.max(leftParts.length, rightParts.length, 3);
+
+		    for (let index = 0; index < length; index += 1) {
+		      const leftValue = leftParts[index] || 0;
+		      const rightValue = rightParts[index] || 0;
+		      if (leftValue > rightValue) return 1;
+		      if (leftValue < rightValue) return -1;
+		    }
+
+		    return 0;
+		  }
+
+		  function getCurrentExtensionVersion() {
+		    return (chrome.runtime.getManifest && chrome.runtime.getManifest().version) || '';
+		  }
+
+		  function getLocalDateKey(date) {
+		    const target = date || new Date();
+		    const year = target.getFullYear();
+		    const month = String(target.getMonth() + 1).padStart(2, '0');
+		    const day = String(target.getDate()).padStart(2, '0');
+		    return `${year}-${month}-${day}`;
+		  }
+
+		  function applyUpdateBadgeState(badgeState) {
+		    const nextState = badgeState && typeof badgeState === 'object' ? badgeState : {};
+		    const latestVersion = nextState.latestVersion || '';
+		    const shouldShow = Boolean(nextState.visible && latestVersion && compareSemverValues(latestVersion, getCurrentExtensionVersion()) > 0);
+
+		    updateBadge.classList.toggle('show', shouldShow);
+		  }
+
+		  function writeUpdateBadgeState(nextState) {
+		    chrome.storage.local.set({
+		      [UPDATE_BADGE_STORAGE_KEY]: {
+		        ...nextState,
+		        updatedAt: Date.now()
+		      }
+		    });
+		  }
+
+		  function showUpdateBadgeForVersion(version, checkedDate) {
+		    writeUpdateBadgeState({
+		      visible: true,
+		      latestVersion: version || '',
+		      checkedDate: checkedDate || getLocalDateKey()
+		    });
+		  }
+
+		  function clearUpdateBadge(checkedDate) {
+		    writeUpdateBadgeState({
+		      visible: false,
+		      latestVersion: '',
+		      checkedDate: checkedDate || getLocalDateKey()
+		    });
+		  }
+
   // 初始化加载
   chrome.storage.local.get([STORAGE_KEY], (res) => {
     if (res[STORAGE_KEY]) {
@@ -819,6 +978,17 @@
     }
   });
 
+	  chrome.storage.local.get([UPDATE_BADGE_STORAGE_KEY], (res) => {
+	    const badgeState = res[UPDATE_BADGE_STORAGE_KEY];
+
+	    if (badgeState && badgeState.visible && badgeState.latestVersion && compareSemverValues(badgeState.latestVersion, getCurrentExtensionVersion()) <= 0) {
+	      clearUpdateBadge(badgeState.checkedDate);
+	      return;
+	    }
+
+	    applyUpdateBadgeState(badgeState);
+	  });
+
   // 跨页同步监听
   chrome.storage.onChanged.addListener((changes) => {
     if (changes[STORAGE_KEY]) {
@@ -843,6 +1013,10 @@
         }
       }
     }
+
+	    if (changes[UPDATE_BADGE_STORAGE_KEY]) {
+	      applyUpdateBadgeState(changes[UPDATE_BADGE_STORAGE_KEY].newValue);
+	    }
   });
 
 	  function handleEditorShortcut(e) {
@@ -1468,11 +1642,13 @@
 	      updateVersionLabel(result.currentVersion || result.version);
 
 	      if (!result.updateAvailable) {
+	        clearUpdateBadge();
 	        setUpdateStatus(result.isDowngrade ? '当前版本高于 latest.json 中的版本。' : '当前已经是最新版本。', 'success');
 	        return;
 	      }
 
 	      latestUpdatePayload = result.latest;
+	      showUpdateBadgeForVersion(result.latest && result.latest.version);
 	      latestNativeHostInfo = result.nativeHost;
 	      syncUpdateActionVisibility();
 	      showPanel();
@@ -1520,6 +1696,7 @@
 	      setUpdateStatus('更新成功，正在重新加载插件并刷新页面。', 'success');
 	      latestUpdatePayload = null;
 	      latestNativeHostInfo = null;
+	      clearUpdateBadge();
 	      syncUpdateActionVisibility();
 	      setTimeout(() => {
 	        window.location.reload();
@@ -1531,7 +1708,61 @@
 	    }
 	  }
 
+	  function getNextDailyUpdateCheckDelay() {
+	    const now = new Date();
+	    const next = new Date(now);
+	    next.setHours(DAILY_UPDATE_CHECK_HOUR, 0, 0, 0);
+
+	    if (next <= now) {
+	      next.setDate(next.getDate() + 1);
+	    }
+
+	    return next.getTime() - now.getTime();
+	  }
+
+	  async function runSilentUpdateCheck() {
+	    const today = getLocalDateKey();
+
+	    chrome.storage.local.get([UPDATE_BADGE_STORAGE_KEY], async (res) => {
+	      const badgeState = res[UPDATE_BADGE_STORAGE_KEY] || {};
+
+	      if (badgeState.checkedDate === today) return;
+
+	      writeUpdateBadgeState({
+	        ...badgeState,
+	        checkedDate: today,
+	        visible: Boolean(badgeState.visible),
+	        latestVersion: badgeState.latestVersion || ''
+	      });
+
+	      try {
+	        const result = await sendUpdateMessage(UPDATE_MESSAGE_TYPES.CHECK);
+
+	        if (!result || !result.ok) {
+	          return;
+	        }
+
+	        if (result.updateAvailable && result.latest && result.latest.version) {
+	          showUpdateBadgeForVersion(result.latest.version, today);
+	          return;
+	        }
+
+	        clearUpdateBadge(today);
+	      } catch (error) {
+	        console.info('[Float] 静默检查更新失败：', error && error.message ? error.message : error);
+	      }
+	    });
+	  }
+
+	  function scheduleDailySilentUpdateCheck() {
+	    window.setTimeout(() => {
+	      runSilentUpdateCheck();
+	      window.setInterval(runSilentUpdateCheck, 24 * 60 * 60 * 1000);
+	    }, getNextDailyUpdateCheckDelay());
+	  }
+
 	  initUpdaterUi();
+	  scheduleDailySilentUpdateCheck();
 	  checkUpdateBtn.addEventListener('click', checkForUpdate);
 	  updateNowBtn.addEventListener('click', updateNow);
 
@@ -2761,10 +2992,6 @@ createRoot(document.getElementById('root')).render(
 	    return buildTextPreviewHtml(source);
 	  }
 
-	  const PREVIEW_PAGE_PATH = 'preview.html';
-	  const PREVIEW_MESSAGE_SOURCE = 'float-extension-preview';
-	  const PREVIEW_RENDER_MESSAGE_TYPE = 'render';
-	  const PREVIEW_ACK_MESSAGE_TYPE = 'ack';
 	  const PREVIEW_POST_INTERVAL_MS = 80;
 	  const PREVIEW_POST_MAX_ATTEMPTS = 80;
 
@@ -2777,7 +3004,7 @@ createRoot(document.getElementById('root')).render(
 	  }
 
 	  function openPreviewPlaceholderWindow() {
-	    const previewWindow = window.open(chrome.runtime.getURL(PREVIEW_PAGE_PATH), '_blank');
+	    const previewWindow = window.open(EXTERNAL_PREVIEW_URL, '_blank');
 
 	    if (!previewWindow) {
 	      throw new Error('预览窗口被浏览器拦截，请允许此页面打开弹出式窗口后重试。');
@@ -2806,6 +3033,7 @@ createRoot(document.getElementById('root')).render(
 	    }
 
 	    function handleAck(event) {
+	      if (event.origin !== EXTERNAL_PREVIEW_ORIGIN) return;
 	      const data = event.data;
 	      if (!data || typeof data !== 'object') return;
 	      if (data.source !== PREVIEW_MESSAGE_SOURCE || data.type !== PREVIEW_ACK_MESSAGE_TYPE) return;
@@ -2822,7 +3050,7 @@ createRoot(document.getElementById('root')).render(
 	      }
 
 	      attempts += 1;
-	      previewWindow.postMessage(message, '*');
+	      previewWindow.postMessage(message, EXTERNAL_PREVIEW_ORIGIN);
 	    }
 
 	    window.addEventListener('message', handleAck);
