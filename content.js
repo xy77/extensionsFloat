@@ -1,6 +1,6 @@
 // content.js
 (function () {
-  const EXTERNAL_PREVIEW_URL = 'https://xy77.github.io/zen/preview.html';
+  const EXTERNAL_PREVIEW_URL = 'https://xy77.github.io/preview.html';
   const EXTERNAL_PREVIEW_ORIGIN = 'https://xy77.github.io';
   const EXTERNAL_PREVIEW_STORAGE_KEY = 'zen_preview_html';
   const PREVIEW_MESSAGE_SOURCE = 'float-extension-preview';
