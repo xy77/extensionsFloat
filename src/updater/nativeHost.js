@@ -5,7 +5,7 @@
     const message = error && error.message ? error.message : String(error || '');
 
     if (/native messaging host.*not found/i.test(message) || /specified native messaging host not found/i.test(message)) {
-      return '本机 updater 还没有安装。请先运行 macOS Native Host 安装脚本。';
+      return '本机 updater 还没有安装。请运行对应系统的 Native Host 安装脚本（macOS: scripts/install-native-host-macos.sh；Windows: 双击 scripts/install-windows.cmd）。';
     }
 
     if (/access to the specified native messaging host is forbidden/i.test(message)) {

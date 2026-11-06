@@ -1,66 +1,86 @@
 # Float Chrome Extension
 
-Float 是一个私下分发的 Chrome unpacked extension。它不依赖 Chrome Web Store，更新通过插件内按钮触发，再由 Native Messaging 调用 macOS 本机 updater 完成下载、备份、替换和回滚。
+Float 是一个私下分发的 Chrome unpacked extension。它不依赖 Chrome Web Store，更新通过页面里的悬浮按钮触发，再由 Chrome Native Messaging 调用本机 updater 完成下载、备份、替换和回滚。macOS 与 Windows 都支持，两端共用同一个 release zip 和同一套一键更新流程。
+
+## 功能一览
+
+| 模块 | 功能 |
+| --- | --- |
+| 悬浮按钮 | 在任意网页注入四角星悬浮按钮：可拖动、贴边回弹；单击开合便签面板；双击切换明暗主题；右键打开更新面板；发现新版本时显示红点 |
+| 玻璃态便签面板 | 可写文本的便签，粒子鼠标引力背景；拖左／下／左下边缘缩放（最小 300×200）；内容 100ms 防抖自动保存到 `chrome.storage.local`，按时间戳跨标签同步，拼音输入过程中不会误存 |
+| 预览快捷键 | `Ctrl/Cmd + S` 打开预览窗口，自动识别 HTML / React / Markdown / JSON / 纯文本；React 预览通过 CDN 加载 React 18 + Babel + Tailwind 编译 JSX；`Esc` 关闭；弹窗被拦截时给出提示 |
+| 下载快捷键 | `Ctrl/Cmd + D` 弹出文件名／格式选择框，`Enter` 确认、`Esc` 取消；React 导出渲染后的 HTML，其余格式导出便签原文 |
+| Gemini Canvas 桥接 | 仅 `gemini.google.com` 生效：在 Canvas「代码 / 预览」分段控件旁注入「全屏」按钮，一键读取编辑器里的代码并打开全屏预览。桥接脚本运行在 MAIN world，从 Monaco / CodeMirror / textarea 等编辑器实例中提取代码，供隔离世界的 content script 打分择优 |
+| 自动更新 | 右键悬浮按钮 →「检查更新」→「立即更新」；从 GitHub 最新 Release 读取 `latest.json`，semver 比较、sha256 校验、备份、保留本机配置、失败自动回滚、成功后自动 `chrome.runtime.reload()` 并刷新页面；每天 13:00 静默检查一次 |
+| 权限范围 | `storage` + `nativeMessaging`；content script 注入 `<all_urls>`；host 权限覆盖 `github.com`、`raw.githubusercontent.com`；预览页使用 `xy77.github.io` 与 React CDN |
 
 ## 项目结构
 
 - `manifest.json`: Chrome extension manifest，当前版本号来自这里的 `version`。
 - `content.js`: 悬浮按钮、玻璃态面板、编辑/预览/下载 UI，以及更新按钮 UI。
 - `background.js`: 插件后台，负责检查更新和调用 Native Messaging host。
+- `gemini-canvas-bridge.js`: Gemini Canvas 代码读取桥接（MAIN world）。
 - `src/updater/checkUpdate.js`: 读取 GitHub latest Release 里的 `latest.json`，做 semver 比较。
-- `src/updater/nativeHost.js`: 调用 `chrome.runtime.sendNativeMessage`。
-- `native-host/updater-macos.sh`: 本机 updater，使用 macOS 自带工具执行下载、sha256 校验、解压、备份、替换、回滚。
-- `scripts/install-native-host-macos.sh`: macOS Native Messaging host 安装脚本。
+- `src/updater/nativeHost.js`: 调用 `chrome.runtime.sendNativeMessage`，统一错误文案。
+- macOS：`native-host/updater-macos.sh` + `run-updater-macos.sh`（本机 updater），`scripts/install-native-host-macos.sh`（安装），`scripts/uninstall-native-host-macos.sh`（卸载）。
+- Windows：`native-host/updater-windows.ps1`（本机 updater），`scripts/install-windows.cmd` + `install-windows.ps1`（双击安装），`scripts/uninstall-windows.cmd`（双击卸载）。
 - `.github/workflows/release-extension.yml`: GitHub Actions 自动生成 release zip、`latest.json` 和 GitHub Release。
 - `scripts/package-release.sh`: 本地手动生成 release zip 和 `latest.json`，通常不需要使用。
+- `.gitattributes`: 保证 `*.cmd` 在 Windows / GitHub Actions 上都是 CRLF 换行。
 
 ## 每台电脑首次安装
 
 每一台使用插件的电脑只需要配置一次。朋友不需要 GitHub、GitHub Desktop、Node 或 Python。
 
-重要：不要把 Chrome 加载目录指向 GitHub Desktop 管理的源码仓库。请使用一个独立、稳定的安装目录，例如 `~/Applications/float-extension`。不建议放在 `~/Desktop`、`~/Documents`、`~/Downloads`、iCloud Drive 或其他可能被 macOS 隐私权限、同步、自动清理影响的目录。后续 updater 会替换这个安装目录里的文件。
+重要：不要把 Chrome 加载目录指向 Git 仓库（GitHub Desktop 管理的源码目录）。请使用一个独立、稳定的安装目录，后续 updater 会整体替换这个目录里的文件。macOS 建议 `~/Applications/float-extension`，Windows 建议 `C:\Users\<你>\float-extension`；不建议放在桌面、文档、下载、iCloud Drive / OneDrive 同步目录，也不要让路径包含 `&`。
+
+### Windows（最简单，全程只需双击一次）
 
 1. 下载你提供的初始安装 zip，或从 GitHub Release 下载 `extension-v<version>.zip`。
-2. 解压到稳定目录，例如 `~/Applications/float-extension`。确保 `manifest.json` 位于这个目录的第一层。
-3. 打开 Chrome，进入 `chrome://extensions`。
-4. 开启 Developer mode。
-5. 点击 Load unpacked，选择解压后的插件目录，例如 `~/Applications/float-extension`。
-6. 在扩展卡片上复制 Extension ID。
-7. 打开终端，进入插件安装目录：
+2. 解压到固定目录，例如 `C:\Users\<你>\float-extension`，确保 `manifest.json` 位于这个目录的第一层。
+3. 打开 Chrome → `chrome://extensions` → 开启「开发者模式」→「加载已解压的扩展程序」，选择该目录，然后复制扩展卡片上的 **Extension ID**。
+4. 双击目录里的 `scripts\install-windows.cmd`，粘贴 ID 回车，看到「Native Host 自检通过」即完成。
+
+不需要管理员权限、不需要联网、不需要安装任何额外软件：脚本只使用 Windows 自带的 PowerShell、cmd、curl 和注册表（HKCU），并会自动做完一次 `ping → pong` 自检。完成后重启一次 Chrome 更稳妥。
+
+安装脚本做了什么：把宿主文件写到 `%LOCALAPPDATA%\FloatExtension\`（host manifest、启动器、`config.json`），并创建注册表项
+
+```text
+HKEY_CURRENT_USER\Software\Google\Chrome\NativeMessagingHosts\com.float.extension_updater
+```
+
+这些文件放在插件目录之外，所以以后每次更新只替换插件目录，Native Host 注册不会失效。宿主启动器每次运行都会复制插件目录里最新的 `updater-windows.ps1`，因此 updater 本身也会随版本升级。
+
+### macOS
+
+1. 下载初始安装 zip，或从 GitHub Release 下载 `extension-v<version>.zip`。
+2. 解压到稳定目录，例如 `~/Applications/float-extension`，确保 `manifest.json` 位于第一层。
+3. 打开 Chrome → `chrome://extensions` → 开启 Developer mode → Load unpacked，选择解压后的插件目录。
+4. 复制 Extension ID，然后在插件安装目录运行一次：
 
 ```bash
 cd ~/Applications/float-extension
-```
-
-8. 在插件安装目录运行一次 Native Host 安装脚本：
-
-```bash
 ./scripts/install-native-host-macos.sh <EXTENSION_ID> "$(pwd)"
 ```
-
-完成后，后续这个电脑上的版本更新都可以在页面里的悬浮按钮上完成：右键悬浮按钮打开更新小面板，再点击“检查更新 / 立即更新”。
 
 ## 固定 Extension ID
 
 Native Messaging 的 `allowed_origins` 必须写入准确的 Extension ID。
 
-最简单的方式是：每台电脑第一次 Load unpacked 后复制 Chrome 显示的 Extension ID，然后运行安装脚本。只要插件目录不移动，这个 ID 通常保持稳定。
+最简单的方式是：每台电脑第一次 Load unpacked 后复制 Chrome 显示的 ID，再运行对应系统的安装脚本。只要插件目录不移动，这个 ID 通常保持稳定。
 
-如果你希望所有朋友电脑上的 ID 完全一致，可以使用 Chrome 打包扩展生成私钥，再把对应的 public key 写入 `manifest.json` 的 `key` 字段。私钥 `.pem` 不要提交到仓库。之后朋友使用带同一个 `key` 的包加载，Extension ID 就会固定。
+如果你希望所有朋友电脑上的 ID 完全一致，可以使用 Chrome 打包扩展生成私钥，再把对应的 public key 写入 `manifest.json` 的 `key` 字段。私钥 `.pem` 不要提交到仓库。
 
-## 一键更新流程
+## 一键更新流程（macOS / Windows 相同）
 
-1. 在任意网页找到 Float 悬浮按钮。
-2. 右键悬浮按钮，打开更新小面板。
-3. 小面板会显示当前版本号和“检查更新”按钮。
-4. 点击“检查更新”。
-5. 插件从 GitHub 最新 Release 读取 `latest.json`。
-6. 如果有新版本，“检查更新”会替换为“立即更新”，并显示版本号和更新说明。
-7. 点击“立即更新”后，插件通过 Native Messaging 调用本机 updater。
-8. updater 会下载 `extension-v<version>.zip`，校验版本，按需校验 sha256，备份当前目录，替换文件并保留本地配置。
-9. 更新成功后，插件会自动 `chrome.runtime.reload()`，并刷新当前页面让新的 content script 生效。
+1. 在任意网页找到 Float 悬浮按钮，右键打开更新小面板。
+2. 面板显示当前版本号，点击「检查更新」。
+3. 插件从 GitHub 最新 Release 读取 `latest.json`；有新版本时按钮变成「立即更新」并显示版本号和更新说明。
+4. 点击「立即更新」，插件通过 Native Messaging 调用本机 updater。
+5. updater 下载 `extension-v<version>.zip`，校验版本与 sha256，备份当前目录，替换文件并保留本地配置；失败会自动回滚。
+6. 更新成功后插件自动 `chrome.runtime.reload()` 并刷新当前页面。
 
-如果自动刷新后页面里的旧 content script 仍未完全更新，请到 `chrome://extensions` 点击该扩展的刷新按钮，或手动刷新当前网页。
+如果自动刷新后旧 content script 仍未完全更新，请到 `chrome://extensions` 点击该扩展的刷新按钮，或手动刷新网页。
 
 ## 发布新版本
 
@@ -68,38 +88,32 @@ Native Messaging 的 `allowed_origins` 必须写入准确的 Extension ID。
 
 最少操作：
 
-1. 修改 `manifest.json` 的 `version`，版本号使用 semver，例如从 `1.0.5` 改到 `1.0.6`。
-2. 在 GitHub Desktop 里写 commit message，例如 `Release v1.0.6`。
-3. 点击 Commit to main。
-4. 点击 Push origin。
-5. GitHub Actions 发布完成后，在浏览器里右键 Float 悬浮按钮，点击“检查更新”。
+1. 修改 `manifest.json` 的 `version`，版本号使用 semver，例如从 `1.0.22` 改到 `1.0.23`。
+2. 在 GitHub Desktop 里写 commit message，例如 `Release v1.0.23`。
+3. Commit to main → Push origin。
+4. GitHub Actions 发布完成后，在浏览器里右键 Float 悬浮按钮，点击「检查更新」。
 
 push 后 GitHub Actions 会自动：
-   - 读取 `manifest.json` 的版本号
-   - 创建 tag，例如 `v1.0.6`
-   - 打包 `extension-v1.0.6.zip`
-   - 生成 `latest.json`
-   - 创建 GitHub Release
-   - 上传 `extension-v1.0.6.zip` 和 `latest.json`
 
-正常发布新版本时，不需要修改根目录 `latest.json`，也不需要运行 `scripts/package-release.sh`。根目录 `latest.json` 只用于旧版过渡；1.0.1 之后的插件默认读取 GitHub latest Release 的 `latest.json`。
+- 读取 `manifest.json` 的版本号
+- 创建 tag，例如 `v1.0.23`
+- 打包 `extension-v1.0.23.zip`
+- 生成 `latest.json`
+- 创建 GitHub Release 并上传 zip 与 `latest.json`
 
-如果当前版本的 tag 已经存在，Actions 会跳过发布，避免重复创建 Release。
+Windows 的 `.cmd` / `.ps1` 和 macOS 的 `.sh` 都是纯文本源码，workflow 原有的 `zip -r` 步骤会把它们一起打进 release zip，**不需要修改 `.github/workflows/release-extension.yml`**，原发布流程继续生效。`.gitattributes` 保证 Actions 在 Linux runner 上 checkout 出来的 `.cmd` 仍是 CRLF，Windows 双击可正常执行。
 
-简化流程就是：
+正常发布新版本时，不需要修改根目录 `latest.json`，也不需要运行 `scripts/package-release.sh`。根目录 `latest.json` 只用于旧版过渡；1.0.1 之后的插件默认读取 GitHub latest Release 的 `latest.json`。如果当前版本的 tag 已经存在，Actions 会跳过发布，避免重复创建 Release。
 
-1. 修改 `manifest.json`。
-2. Git commit。
-3. Git push。
-4. 点“检查更新”。
+简化流程就是：改 `manifest.json` → Git commit → Git push → 点「检查更新」。
 
-发布进度可以在仓库的 Actions 页面查看：
+发布进度：
 
 ```text
 https://github.com/xy77/extensionsFloat/actions
 ```
 
-默认插件读取最新 Release 里的 `latest.json`：
+默认插件读取：
 
 ```text
 https://github.com/xy77/extensionsFloat/releases/latest/download/latest.json
@@ -111,8 +125,8 @@ https://github.com/xy77/extensionsFloat/releases/latest/download/latest.json
 
 ```json
 {
-  "version": "1.0.1",
-  "downloadUrl": "https://github.com/xy77/extensionsFloat/releases/download/v1.0.1/extension-v1.0.1.zip",
+  "version": "1.0.23",
+  "downloadUrl": "https://github.com/xy77/extensionsFloat/releases/download/v1.0.23/extension-v1.0.23.zip",
   "sha256": "release zip sha256",
   "changelog": "更新说明"
 }
@@ -122,13 +136,9 @@ https://github.com/xy77/extensionsFloat/releases/latest/download/latest.json
 
 ## 已安装电脑如何更新
 
-首次安装并配置 Native Host 后，后续更新只需要：
+首次安装并配置 Native Host 后，后续更新只需要：右键悬浮按钮 →「检查更新」→「立即更新」。
 
-1. 右键页面里的 Float 悬浮按钮，打开更新小面板。
-2. 点击“检查更新”。
-3. 看到新版本后点击“立即更新”。
-
-如果“立即更新”不可点击，通常说明没有新版本，或 Native Host 不可用。先看面板里的提示文字，再参考下面的常见问题。
+如果「立即更新」不可点击，通常说明没有新版本，或 Native Host 不可用。先看面板里的提示文字，再参考下面的常见问题。
 
 ## 本地手动打包（可选）
 
@@ -144,6 +154,8 @@ GITHUB_REPO=xy77/extensionsFloat ./scripts/package-release.sh
 - `dist/latest.json`
 - `latest.json`
 
+注意：这个脚本是 macOS 专用的（依赖 `plutil`、`shasum`）。Windows 用户请直接使用 GitHub Release 的 zip，不要本地打包。
+
 ## 本地文件保留规则
 
 更新时会保留这些本地文件和目录：
@@ -154,39 +166,38 @@ GITHUB_REPO=xy77/extensionsFloat ./scripts/package-release.sh
 - `logs/`
 - `native-host/config.json`
 
-备份会写入插件目录下的 `backups/`。发布包会排除 `.env`、`config.local.json`、`data/`、`logs/`、`backups/`、`native-host/config.json` 和 `node_modules/`。
+备份会写入插件目录下的 `backups/`。发布包会排除上述本地文件、`backups/` 和 `node_modules/`。Windows 的宿主文件在 `%LOCALAPPDATA%\FloatExtension\`，不在插件目录内，因此不受替换影响。
 
 ## 常见问题
 
 `本机 updater 还没有安装`
 
-重新复制当前 Extension ID，然后运行：
-
-```bash
-./scripts/install-native-host-macos.sh <EXTENSION_ID> "$(pwd)"
-```
+macOS：重新复制当前 Extension ID，在插件目录运行 `./scripts/install-native-host-macos.sh <EXTENSION_ID> "$(pwd)"`。
+Windows：双击插件目录里的 `scripts\install-windows.cmd`，重新粘贴当前 Extension ID，看到自检通过为止；然后重启一次 Chrome。
 
 `Native Host 已安装，但当前扩展 ID 没有被允许`
 
-说明 Chrome 当前显示的 Extension ID 和 Native Host manifest 里的 `allowed_origins` 不一致。用当前 ID 重新运行安装脚本。
+Chrome 当前显示的 Extension ID 和 host manifest 里的 `allowed_origins` 不一致（常见于重新解压或移动了插件目录）。用当前 ID 重新运行对应系统的安装脚本。
 
 `发现新版本，但 updater 不可用：Native host has exited`
 
-通常是 Native Host 启动失败，或当前 Chrome 加载的插件目录不适合自更新。先重新复制当前 Extension ID，在插件安装目录运行：
-
-```bash
-./scripts/install-native-host-macos.sh <EXTENSION_ID> "$(pwd)"
-```
-
-如果插件是从 GitHub Desktop 的源码仓库目录加载的，请改用独立安装目录，例如 `~/Applications/float-extension`，重新 Load unpacked 并重新安装 Native Host。updater 不应该直接替换 Git 仓库目录。也不建议使用 `~/Desktop`、`~/Documents`、`~/Downloads` 或 iCloud Drive 作为插件安装目录。
+Windows 上先看 `%TEMP%\float-updater-windows.log`，再按顺序检查：插件目录是否被移动、是否指向 Git 仓库、是否重新解压过（ID 变化）。重新运行 `scripts\install-windows.cmd` 通常即可解决。macOS 上同样重新运行安装脚本，并确认插件不是从 GitHub Desktop 源码仓库目录加载的。
 
 `extensionDir 不存在或不是目录`
 
-插件目录被移动了。进入新的插件目录，重新运行安装脚本。
+插件目录被移动了。进入新的插件目录，重新运行对应系统的安装脚本。
+
+`双击 install-windows.cmd 没反应 / 被安全提示拦截`
+
+从网络下载的 zip 可能带「 Mark of the Web」：右键 `install-windows.cmd` → 属性 → 勾选「解除锁定」→ 应用，再双击。若 SmartScreen 提示，点「更多信息」→「仍要运行」。窗口会自动停留，能看到安装结果或报错。
+
+`Windows 安装自检没通过`
+
+安装文件其实已经写好。重启一次 Chrome，右键悬浮按钮点「检查更新」确认；仍不行时查看 `%TEMP%\float-updater-windows.log`，并确认宿主目录路径中没有 `&`，插件目录里存在 `native-host\updater-windows.ps1`。
 
 `下载失败`
 
-确认 GitHub Release 是 public，`latest.json` 中的 `downloadUrl` 可以匿名访问。
+确认 GitHub Release 是 public，`latest.json` 中的 `downloadUrl` 可以匿名访问。Windows 优先使用系统自带 `curl.exe`（Windows 10 1803+），老系统会回退到 `Invoke-WebRequest`。
 
 `下载包 sha256 校验失败`
 
@@ -196,12 +207,14 @@ GITHUB_REPO=xy77/extensionsFloat ./scripts/package-release.sh
 
 通常插件会自动重新加载并刷新当前页面。如果仍然没变化，打开 `chrome://extensions`，点击扩展卡片上的刷新按钮，然后刷新当前网页。
 
-## Windows 预留
-
-当前 updater 使用 macOS 自带工具实现。Windows 后续需要新增单独的 updater 可执行文件和注册表安装脚本。
-
 ## 卸载 Native Host
+
+macOS：
 
 ```bash
 ./scripts/uninstall-native-host-macos.sh
 ```
+
+Windows：双击 `scripts\uninstall-windows.cmd`。只删除注册表项和 `%LOCALAPPDATA%\FloatExtension\` 下生成的宿主文件，不会删除插件目录或便签数据。
+
+之后如需彻底移除插件，在 `chrome://extensions` 里移除扩展，再手动删除插件目录。
