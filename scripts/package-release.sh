@@ -19,6 +19,7 @@ rm -f "$ZIP_PATH" "$LATEST_PATH"
 zip -r "$ZIP_PATH" . \
   -x ".git/*" \
   -x ".github/*" \
+  -x ".workbuddy/*" \
   -x "node_modules/*" \
   -x "backups/*" \
   -x "logs/*" \

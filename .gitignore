@@ -7,3 +7,4 @@ backups/
 dist/
 node_modules/
 native-host/config.json
+.workbuddy/

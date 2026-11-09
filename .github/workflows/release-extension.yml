@@ -69,6 +69,7 @@ jobs:
           zip -r "$zip_path" . \
             -x ".git/*" \
             -x ".github/*" \
+            -x ".workbuddy/*" \
             -x "node_modules/*" \
             -x "backups/*" \
             -x "logs/*" \

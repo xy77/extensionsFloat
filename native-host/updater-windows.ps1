@@ -111,7 +111,9 @@ function Get-ExtensionDir {
   if (-not [System.IO.Path]::IsPathRooted($dir)) { Fail 'EXTENSION_DIR_INVALID' 'extensionDir 必须是绝对路径。' }
   if (-not (Test-Path -LiteralPath $dir -PathType Container)) { Fail 'EXTENSION_DIR_INVALID' 'extensionDir 不存在或不是目录。' }
   if (Test-Path -LiteralPath (Join-Path $dir '.git')) {
-    Fail 'EXTENSION_DIR_IS_GIT_REPO' 'extensionDir 指向 Git 仓库。请把插件加载到一个独立安装目录，再重新安装 Native Host。'
+    # Installation warns about this, but does not block it. Never delete .git:
+    # it may hold the user's only copy of repository history.
+    Write-Log 'Warning: extensionDir is a git worktree; .git will be preserved.'
   }
 
   return (Resolve-Path -LiteralPath $dir).Path
@@ -138,9 +140,9 @@ function Compare-Semver {
 
 function Clear-DirectoryContents {
   param([string]$Path)
-  Get-ChildItem -LiteralPath $Path -Force | Where-Object { $_.Name -ne $script:BackupDirName } | ForEach-Object {
-    Remove-Item -LiteralPath $_.FullName -Recurse -Force
-  }
+  Get-ChildItem -LiteralPath $Path -Force |
+    Where-Object { $_.Name -ne $script:BackupDirName -and $_.Name -ne '.git' } |
+    ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
 }
 
 function Copy-DirectoryContents {
@@ -264,7 +266,7 @@ function Invoke-Update {
     $stamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH-mm-ssZ')
     $script:BackupDir = Join-Path $backupRoot ("backup-$stamp-$PID")
     $null = [System.IO.Directory]::CreateDirectory($script:BackupDir)
-    Copy-DirectoryContents -Source $extensionDir -Destination $script:BackupDir -ExcludeNames @($script:BackupDirName)
+    Copy-DirectoryContents -Source $extensionDir -Destination $script:BackupDir -ExcludeNames @($script:BackupDirName, '.git')
 
     Save-PreservedEntries -ExtensionDir $extensionDir -PreservedDir $preservedDir
     Clear-DirectoryContents $extensionDir

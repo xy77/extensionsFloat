@@ -32,16 +32,18 @@ Float 是一个私下分发的 Chrome unpacked extension。它不依赖 Chrome W
 
 每一台使用插件的电脑只需要配置一次。朋友不需要 GitHub、GitHub Desktop、Node 或 Python。
 
-重要：不要把 Chrome 加载目录指向 Git 仓库（GitHub Desktop 管理的源码目录）。请使用一个独立、稳定的安装目录，后续 updater 会整体替换这个目录里的文件。macOS 建议 `~/Applications/float-extension`，Windows 建议 `C:\Users\<你>\float-extension`；不建议放在桌面、文档、下载、iCloud Drive / OneDrive 同步目录，也不要让路径包含 `&`。
+重要：不要把 Chrome 加载目录指向 Git 仓库（GitHub Desktop 管理的源码目录）。请使用一个独立、稳定的安装目录，后续 updater 会整体替换这个目录里的文件（macOS 会直接拒绝 Git 仓库；Windows 允许但会覆盖工作区文件，见下方 Windows 小节）。macOS 建议 `~/Applications/float-extension`，Windows 建议 `C:\Users\<你>\float-extension`；不建议放在桌面、文档、下载、iCloud Drive / OneDrive 同步目录，也不要让路径包含 `&`。
 
 ### Windows（最简单，全程只需双击一次）
 
-1. 下载你提供的初始安装 zip，或从 GitHub Release 下载 `extension-v<version>.zip`。
-2. 解压到固定目录，例如 `C:\Users\<你>\float-extension`，确保 `manifest.json` 位于这个目录的第一层。
+1. 从 GitHub Release 下载 **v1.0.24 及以后** 的 `extension-v<version>.zip`（v1.0.23 的安装脚本有 `-NonInteractive` 问题，v1.0.22 及更早的包里没有 Windows 文件）。
+2. 解压到固定目录，例如 `C:\Users\<你>\float-extension`，确保 `manifest.json` 位于这个目录的第一层。`scripts\install-windows.cmd` 和 `scripts\install-windows.ps1` 必须一起保留。
 3. 打开 Chrome → `chrome://extensions` → 开启「开发者模式」→「加载已解压的扩展程序」，选择该目录，然后复制扩展卡片上的 **Extension ID**。
-4. 双击目录里的 `scripts\install-windows.cmd`，粘贴 ID 回车，看到「Native Host 自检通过」即完成。
+4. 双击目录里的 `scripts\install-windows.cmd`。窗口会先显示插件目录和 PowerShell 版本，然后出现 `Extension ID:` 提示；粘贴 ID 回车，看到「Native Host 自检通过」即完成。
 
 不需要管理员权限、不需要联网、不需要安装任何额外软件：脚本只使用 Windows 自带的 PowerShell、cmd、curl 和注册表（HKCU），并会自动做完一次 `ping → pong` 自检。完成后重启一次 Chrome 更稳妥。
+
+安装入口**不能**带 `-NonInteractive`（该模式下 PowerShell 的 `Read-Host` 会直接报错、无法粘贴 ID）。即使插件目录恰好是 Git 仓库，脚本也只会警告并继续：更新时会保留 `.git`，但会覆盖该目录的工作区文件，所以仍建议用独立解压目录。任何步骤失败，窗口都会打印中文原因、排查清单和日志路径 `%TEMP%\float-install-windows.log`。
 
 安装脚本做了什么：把宿主文件写到 `%LOCALAPPDATA%\FloatExtension\`（host manifest、启动器、`config.json`），并创建注册表项
 
@@ -88,20 +90,20 @@ Native Messaging 的 `allowed_origins` 必须写入准确的 Extension ID。
 
 最少操作：
 
-1. 修改 `manifest.json` 的 `version`，版本号使用 semver，例如从 `1.0.22` 改到 `1.0.23`。
-2. 在 GitHub Desktop 里写 commit message，例如 `Release v1.0.23`。
+1. 修改 `manifest.json` 的 `version`，版本号使用 semver，例如从 `1.0.23` 改到 `1.0.24`。
+2. 在 GitHub Desktop 里写 commit message，例如 `Release v1.0.24`。
 3. Commit to main → Push origin。
 4. GitHub Actions 发布完成后，在浏览器里右键 Float 悬浮按钮，点击「检查更新」。
 
 push 后 GitHub Actions 会自动：
 
 - 读取 `manifest.json` 的版本号
-- 创建 tag，例如 `v1.0.23`
-- 打包 `extension-v1.0.23.zip`
+- 创建 tag，例如 `v1.0.24`
+- 打包 `extension-v1.0.24.zip`
 - 生成 `latest.json`
 - 创建 GitHub Release 并上传 zip 与 `latest.json`
 
-Windows 的 `.cmd` / `.ps1` 和 macOS 的 `.sh` 都是纯文本源码，workflow 原有的 `zip -r` 步骤会把它们一起打进 release zip，**不需要修改 `.github/workflows/release-extension.yml`**，原发布流程继续生效。`.gitattributes` 保证 Actions 在 Linux runner 上 checkout 出来的 `.cmd` 仍是 CRLF，Windows 双击可正常执行。
+Windows 的 `.cmd` / `.ps1` 和 macOS 的 `.sh` 都是纯文本源码，workflow 原有的 `zip -r` 步骤会把它们一起打进 release zip，**不需要为了支持 Windows 改动发布流程**（只额外排除了本地的 `.workbuddy/` 目录，发布逻辑本身不变）。`.gitattributes` 保证 Actions 在 Linux runner 上 checkout 出来的 `.cmd` 仍是 CRLF，Windows 双击可正常执行。
 
 正常发布新版本时，不需要修改根目录 `latest.json`，也不需要运行 `scripts/package-release.sh`。根目录 `latest.json` 只用于旧版过渡；1.0.1 之后的插件默认读取 GitHub latest Release 的 `latest.json`。如果当前版本的 tag 已经存在，Actions 会跳过发布，避免重复创建 Release。
 
@@ -125,8 +127,8 @@ https://github.com/xy77/extensionsFloat/releases/latest/download/latest.json
 
 ```json
 {
-  "version": "1.0.23",
-  "downloadUrl": "https://github.com/xy77/extensionsFloat/releases/download/v1.0.23/extension-v1.0.23.zip",
+  "version": "1.0.24",
+  "downloadUrl": "https://github.com/xy77/extensionsFloat/releases/download/v1.0.24/extension-v1.0.24.zip",
   "sha256": "release zip sha256",
   "changelog": "更新说明"
 }
@@ -166,9 +168,13 @@ GITHUB_REPO=xy77/extensionsFloat ./scripts/package-release.sh
 - `logs/`
 - `native-host/config.json`
 
-备份会写入插件目录下的 `backups/`。发布包会排除上述本地文件、`backups/` 和 `node_modules/`。Windows 的宿主文件在 `%LOCALAPPDATA%\FloatExtension\`，不在插件目录内，因此不受替换影响。
+备份会写入插件目录下的 `backups/`。发布包会排除上述本地文件、`backups/` 和 `node_modules/`。Windows updater 还会额外保留 `.git/`（且备份时跳过它），避免误删仓库历史。Windows 的宿主文件在 `%LOCALAPPDATA%\FloatExtension\`，不在插件目录内，因此不受替换影响。
 
 ## 常见问题
+
+`双击 install-windows.cmd 后直接报错，没有让我粘贴 ID`
+
+早期版本的安装入口带了 `-NonInteractive`，PowerShell 在该模式下执行 `Read-Host` 会直接抛错；另外目录检查被放在输入之前，遇到 Git 仓库或旧安装包时会先失败。已修复：请更新 `scripts\install-windows.cmd` 与 `scripts\install-windows.ps1`（或重新下载 v1.0.24 及以后的 zip）。新版窗口会先显示插件目录、PowerShell 版本，再要求粘贴 ID；任何异常都会输出中文原因和排查清单。若仍失败，把窗口文字或 `%TEMP%\float-install-windows.log` 发我。
 
 `本机 updater 还没有安装`
 
