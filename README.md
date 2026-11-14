@@ -11,6 +11,7 @@ Float 是一个私下分发的 Chrome unpacked extension。它不依赖 Chrome W
 | 预览快捷键 | `Ctrl/Cmd + S` 打开预览窗口，自动识别 HTML / React / Markdown / JSON / 纯文本；React 预览通过 CDN 加载 React 18 + Babel + Tailwind 编译 JSX；`Esc` 关闭；弹窗被拦截时给出提示 |
 | 下载快捷键 | `Ctrl/Cmd + D` 弹出文件名／格式选择框，`Enter` 确认、`Esc` 取消；React 导出渲染后的 HTML，其余格式导出便签原文 |
 | Gemini Canvas 桥接 | 仅 `gemini.google.com` 生效：在 Canvas「代码 / 预览」分段控件旁注入「全屏」按钮，一键读取编辑器里的代码并打开全屏预览。桥接脚本运行在 MAIN world，从 Monaco / CodeMirror / textarea 等编辑器实例中提取代码，供隔离世界的 content script 打分择优 |
+| 回答代码块全屏 | 在 `gemini.google.com`、`qianwen.com`、`chat.deepseek.com`、`doubao.com`、`kimi.com`（含各自子域）的**普通回答代码块**各注入两个「全屏」按钮：上方按钮插在站点原生工具栏**第一个按钮的左边**、与原有按钮同一行（无工具栏时自建一行），下方按钮在代码块底部单起一行右对齐，两处样式完全一致；**仅 Gemini 例外**：它的头部是「语言标签一行 + 操作图标下一行」，反复插原生工具栏都会错位，因此改为把上方按钮固定在**代码块右上角**（头部工具栏下方、代码区右上角的空白，不占布局、不进代码块 DOM），位置不受站点工具栏重排影响；一屏多个代码块按稳定 id 逐个注入、互不串码。点击只读取该块代码送 `preview.html`，**不会覆盖便签里已输入的内容**；千问会自动剔除代码块行号；豆包会把按行渲染的代码块还原成换行、合并每行独立的 `<code>` 并剔除行号，避免 `postMessage` 里的内容丢失或挤成一行；自动跳过 Monaco / CodeMirror 等可编辑区与行内短代码 |
 | 自动更新 | 右键悬浮按钮 →「检查更新」→「立即更新」；从 GitHub 最新 Release 读取 `latest.json`，semver 比较、sha256 校验、备份、保留本机配置、失败自动回滚、成功后自动 `chrome.runtime.reload()` 并刷新页面；每天 13:00 静默检查一次 |
 | 权限范围 | `storage` + `nativeMessaging`；content script 注入 `<all_urls>`；host 权限覆盖 `github.com`、`raw.githubusercontent.com`；预览页使用 `xy77.github.io` 与 React CDN |
 
@@ -26,6 +27,7 @@ Float 是一个私下分发的 Chrome unpacked extension。它不依赖 Chrome W
 - Windows：`native-host/updater-windows.ps1`（本机 updater），`scripts/install-windows.cmd` + `install-windows.ps1`（双击安装），`scripts/uninstall-windows.cmd`（双击卸载）。
 - `.github/workflows/release-extension.yml`: GitHub Actions 自动生成 release zip、`latest.json` 和 GitHub Release。
 - `scripts/package-release.sh`: 本地手动生成 release zip 和 `latest.json`，通常不需要使用。
+- `scripts/build-local.sh`: 生成 `dist/` 本地测试包，不发版、不改版本号、不改 `latest.json`。
 - `.gitattributes`: 保证 `*.cmd` 在 Windows / GitHub Actions 上都是 CRLF 换行。
 
 ## 每台电脑首次安装
@@ -84,22 +86,48 @@ Native Messaging 的 `allowed_origins` 必须写入准确的 Extension ID。
 
 如果自动刷新后旧 content script 仍未完全更新，请到 `chrome://extensions` 点击该扩展的刷新按钮，或手动刷新网页。
 
+## 本地测试（不发布、不触发自动更新）
+
+功能改动先在本地验证，确认没问题再走下面的发版流程。
+
+```bash
+./scripts/build-local.sh
+```
+
+产物全部在 `dist/`，该目录已被 `.gitignore` 忽略，不会进仓库：
+
+- `dist/float-extension-local/`：Chrome 直接「加载已解压的扩展程序」选这个目录，不用解压。
+- `dist/float-extension-local-v<version>.zip`：拷到别的机器用，解压后是同名目录。
+
+这个脚本用和 GitHub Actions 相同的排除规则打包，但**不改版本号、不改 `latest.json`、不调用 `gh`、不触发 workflow**。包内版本与线上 Release 相同，因此插件的「检查更新」不会误报新版本。
+
+建议的验证步骤：
+
+1. `chrome://extensions` → 开发者模式 →「加载已解压的扩展程序」→ 选 `dist/float-extension-local/`。
+2. 打开 Gemini / 千问 / DeepSeek / 豆包 / Kimi，让回答里出现代码块（例如让它生成一段完整 HTML），确认**每个代码块**都有两个「全屏」：千问 / DeepSeek / 豆包 / Kimi 的上方按钮在原有「复制 / 下载」等按钮**左边**且同一行（不能换行或跑到最右）；**Gemini 的上方按钮固定在代码块右上角**，即头部工具栏下方、代码区右上角的空白处，不插入原生两行工具栏；下方的在代码块底部单起一行，两者样式一致。
+3. 先在便签里随便输入一段文字并记住，再点「全屏」，确认新开的 `xy77.github.io/preview.html` 渲染的是**该代码块**的完整内容，且便签里那段文字**没有被覆盖**。
+4. 重点测千问：确认预览里没有多出 `1 2 3…` 这样的行号，页面样式与手动复制代码到便签再 `Ctrl/Cmd+S` 预览的效果一致。
+5. 重点测豆包：确认预览里**每一行代码都在、没有挤成一行、也没有行号**（豆包按行渲染，旧版只取了第一行 `<code>`）；长代码块尤其要对比。
+6. 全屏预览不依赖 Native Host，这些页面不装 host 也能测。
+
+确认无误后再发版：把 `manifest.json` 的 `version` 升一位，commit + push 到 `main`。版本号不升的话，Actions 会因为同名 Release 已存在而跳过打包。
+
 ## 发布新版本
 
 日常发布只需要 GitHub Desktop，不需要手动创建 GitHub Release，不需要手动上传 zip。
 
 最少操作：
 
-1. 修改 `manifest.json` 的 `version`，版本号使用 semver，例如从 `1.0.23` 改到 `1.0.24`。
-2. 在 GitHub Desktop 里写 commit message，例如 `Release v1.0.24`。
+1. 修改 `manifest.json` 的 `version`，版本号使用 semver，例如从 `1.0.24` 改到 `1.0.25`。
+2. 在 GitHub Desktop 里写 commit message，例如 `Release v1.0.25`。
 3. Commit to main → Push origin。
 4. GitHub Actions 发布完成后，在浏览器里右键 Float 悬浮按钮，点击「检查更新」。
 
 push 后 GitHub Actions 会自动：
 
 - 读取 `manifest.json` 的版本号
-- 创建 tag，例如 `v1.0.24`
-- 打包 `extension-v1.0.24.zip`
+- 创建 tag，例如 `v1.0.25`
+- 打包 `extension-v1.0.25.zip`
 - 生成 `latest.json`
 - 创建 GitHub Release 并上传 zip 与 `latest.json`
 
@@ -127,8 +155,8 @@ https://github.com/xy77/extensionsFloat/releases/latest/download/latest.json
 
 ```json
 {
-  "version": "1.0.24",
-  "downloadUrl": "https://github.com/xy77/extensionsFloat/releases/download/v1.0.24/extension-v1.0.24.zip",
+  "version": "1.0.25",
+  "downloadUrl": "https://github.com/xy77/extensionsFloat/releases/download/v1.0.25/extension-v1.0.25.zip",
   "sha256": "release zip sha256",
   "changelog": "更新说明"
 }

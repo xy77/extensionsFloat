@@ -15,6 +15,10 @@
     if (window.__float_external_preview_receiver__) return;
     window.__float_external_preview_receiver__ = true;
 
+    // 发送端会按 80ms 重发同一个 payload 直到收到 ack，接收端必须按 id 去重，
+    // 否则每次重发都会 document.write 一遍整页，造成闪烁甚至把新预览覆盖成旧内容。
+    let lastRenderedPayloadId = '';
+
     function renderExternalPreviewHtml(htmlContent) {
       const content = typeof htmlContent === 'string' ? htmlContent : '';
       const titleMatch = content.match(/<title>([\s\S]*?)<\/title>/i);
@@ -45,17 +49,23 @@
       if (!data || typeof data !== 'object') return;
       if (data.source !== PREVIEW_MESSAGE_SOURCE || data.type !== PREVIEW_RENDER_MESSAGE_TYPE) return;
 
-      try {
-        renderExternalPreviewHtml(data.payload && data.payload.frameHtml);
-      } catch (error) {
-        renderExternalPreviewError(error && error.message ? error.message : '无法写入预览内容。');
+      const payloadId = data.payload && data.payload.id ? data.payload.id : '';
+
+      // 只透传 payload.frameHtml，不在这里二次加工，保证与 buildPreviewPayload 生成的文档一致。
+      if (!payloadId || payloadId !== lastRenderedPayloadId) {
+        lastRenderedPayloadId = payloadId;
+        try {
+          renderExternalPreviewHtml(data.payload && data.payload.frameHtml);
+        } catch (error) {
+          renderExternalPreviewError(error && error.message ? error.message : '无法写入预览内容。');
+        }
       }
 
-      if (event.source && data.payload && data.payload.id) {
+      if (event.source && payloadId) {
         event.source.postMessage({
           source: PREVIEW_MESSAGE_SOURCE,
           type: PREVIEW_ACK_MESSAGE_TYPE,
-          id: data.payload.id
+          id: payloadId
         }, event.origin || '*');
       }
     });
@@ -3013,12 +3023,17 @@ createRoot(document.getElementById('root')).render(
 	    return previewWindow;
 	  }
 
-	  function postPreviewPayload(previewWindow, payload) {
-	    if (!previewWindow || previewWindow.closed) {
-	      throw new Error('预览窗口已经关闭。');
-	    }
+  let activePreviewPoster = null;
 
-	    let acknowledged = false;
+  function postPreviewPayload(previewWindow, payload) {
+    // 连续点击全屏时先停掉上一个 payload 的重发定时器，避免两个 payload 交错把预览页反复重写。
+    if (typeof activePreviewPoster === 'function') activePreviewPoster();
+
+    if (!previewWindow || previewWindow.closed) {
+      throw new Error('预览窗口已经关闭。');
+    }
+
+    let acknowledged = false;
 	    let attempts = 0;
 	    const message = {
 	      source: PREVIEW_MESSAGE_SOURCE,
@@ -3026,11 +3041,12 @@ createRoot(document.getElementById('root')).render(
 	      payload
 	    };
 
-	    function cleanup() {
-	      acknowledged = true;
-	      window.removeEventListener('message', handleAck);
-	      window.clearInterval(timer);
-	    }
+    function cleanup() {
+      acknowledged = true;
+      window.removeEventListener('message', handleAck);
+      window.clearInterval(timer);
+      if (activePreviewPoster === cleanup) activePreviewPoster = null;
+    }
 
 	    function handleAck(event) {
 	      if (event.origin !== EXTERNAL_PREVIEW_ORIGIN) return;
@@ -3053,10 +3069,11 @@ createRoot(document.getElementById('root')).render(
 	      previewWindow.postMessage(message, EXTERNAL_PREVIEW_ORIGIN);
 	    }
 
-	    window.addEventListener('message', handleAck);
-	    const timer = window.setInterval(post, PREVIEW_POST_INTERVAL_MS);
-	    post();
-	  }
+    activePreviewPoster = cleanup;
+    window.addEventListener('message', handleAck);
+    const timer = window.setInterval(post, PREVIEW_POST_INTERVAL_MS);
+    post();
+  }
 
 	  function buildPreviewPayload(source) {
 	    const previewSource = typeof source === 'string' ? source : '';
@@ -3709,28 +3726,744 @@ createRoot(document.getElementById('root')).render(
 	    return bestCandidate.text;
 	  }
 
-	  async function previewGeminiCanvasCode(button) {
+	  const HOST_CODE_ID_ATTR = 'data-float-host-code-id';
+	  const HOST_CODE_FOOTER_ATTR = 'data-float-host-code-footer';
+	  const HOST_CODE_HEADER_ATTR = 'data-float-host-code-header';
+	  const HOST_CODE_VARIANT_ATTR = 'data-float-host-code-variant';
+  const HOST_CODE_LAYOUT_ATTR = 'data-float-host-code-layout';
+  const HOST_CODE_NOWRAP_ATTR = 'data-float-host-code-nowrap';
+  const HOST_CODE_CORNER_ATTR = 'data-float-gemini-corner';
+  const HOST_CODE_LAYOUT_VERSION = '5';
+	  const HOST_CODE_FULLSCREEN_STYLE_ID = 'float-host-code-fullscreen-style';
+	  const HOST_CODE_SUPPORTED_HOSTS = [
+	    'gemini.google.com',
+	    'qianwen.com',
+	    'tongyi.aliyun.com',
+	    'chat.deepseek.com',
+	    'deepseek.com',
+	    'doubao.com',
+	    'kimi.com',
+	    'kimi.moonshot.cn'
+	  ];
+	  const HOST_CODE_FULLSCREEN_ICON =
+	    '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" ' +
+	    'stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+	    '<path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/>' +
+	    '</svg>';
+
+	  function isSupportedCodeBlockPage() {
+	    const hostname = window.location.hostname.toLowerCase();
+	    return HOST_CODE_SUPPORTED_HOSTS.some((host) => (
+	      hostname === host || hostname.endsWith(`.${host}`)
+	    ));
+	  }
+
+	  function ensureHostCodeFullscreenStyle() {
+	    if (document.getElementById(HOST_CODE_FULLSCREEN_STYLE_ID)) return;
+
+	    ensureGeminiFullscreenButtonStyle();
+
+	    const styleElement = document.createElement('style');
+	    styleElement.id = HOST_CODE_FULLSCREEN_STYLE_ID;
+	    styleElement.textContent = `
+	      .float-host-code-fullscreen-btn {
+	        display: inline-flex !important;
+	        align-items: center !important;
+	        justify-content: center !important;
+	        gap: 5px !important;
+	        box-sizing: border-box !important;
+	        margin: 0 !important;
+	        padding: 4px 8px !important;
+	        border: 0 !important;
+	        border-radius: 6px !important;
+	        background: transparent !important;
+	        color: inherit !important;
+	        font-family: inherit !important;
+	        font-size: 12px !important;
+	        font-weight: 500 !important;
+	        line-height: 1.3 !important;
+	        letter-spacing: normal !important;
+	        text-transform: none !important;
+        cursor: pointer !important;
+        white-space: nowrap !important;
+        user-select: none !important;
+        vertical-align: middle !important;
+        flex: 0 0 auto !important;
+        align-self: center !important;
+        float: none !important;
+        opacity: .75 !important;
+	        transition: opacity .15s ease, background-color .15s ease !important;
+	      }
+
+	      .float-host-code-fullscreen-btn:hover,
+	      .float-host-code-fullscreen-btn:focus-visible {
+	        opacity: 1 !important;
+	        background-color: rgba(128, 128, 128, .16) !important;
+	      }
+
+	      .float-host-code-fullscreen-btn svg {
+	        flex: none !important;
+	        width: 15px !important;
+	        height: 15px !important;
+	      }
+
+	      .float-host-code-fullscreen-btn[data-float-gemini-status="error"] {
+	        color: #b3261e !important;
+	      }
+
+      /* 找不到原生工具栏时自建的一行；按钮样式与插入原生行的完全一致 */
+      [${HOST_CODE_HEADER_ATTR}],
+      [${HOST_CODE_FOOTER_ATTR}] {
+        display: flex !important;
+        flex-wrap: nowrap !important;
+        align-items: center !important;
+        justify-content: flex-end !important;
+        gap: 8px !important;
+        box-sizing: border-box !important;
+        width: 100% !important;
+        min-width: 0 !important;
+        min-height: 30px !important;
+        margin: 0 !important;
+        float: none !important;
+        clear: both !important;
+        grid-column: 1 / -1 !important;
+      }
+
+      [${HOST_CODE_HEADER_ATTR}] {
+        padding: 2px 8px 4px !important;
+      }
+
+      /* Gemini 的头部是「语言标签一行 + 操作图标另一行」的两行工具栏，
+         把按钮插进原生容器总会被挤到上面那一行。按截图要求，不再插原生工具栏，
+         改为在代码块右上角（头部栏下方、代码区右上角空白）单独浮一个按钮。
+         用 0 高度的 header 当定位锚点：不占布局、不进 pre，读取代码时也不会带上「全屏」二字。 */
+      [${HOST_CODE_HEADER_ATTR}][${HOST_CODE_CORNER_ATTR}] {
+        position: relative !important;
+        display: block !important;
+        height: 0 !important;
+        min-height: 0 !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        border: 0 !important;
+        overflow: visible !important;
+        pointer-events: none !important;
+        z-index: 5 !important;
+      }
+
+      [${HOST_CODE_HEADER_ATTR}][${HOST_CODE_CORNER_ATTR}] > .float-host-code-fullscreen-btn {
+        position: absolute !important;
+        top: 4px !important;
+        right: 10px !important;
+        pointer-events: auto !important;
+      }
+
+      /* 代码块底部单起一行，右对齐 */
+      [${HOST_CODE_FOOTER_ATTR}] {
+        padding: 5px 8px 6px !important;
+        margin-top: 6px !important;
+        border-top: 1px solid rgba(128, 128, 128, .14) !important;
+      }
+    `;
+	    (document.head || document.documentElement).appendChild(styleElement);
+	  }
+
+	  // Monaco / CodeMirror / 可编辑区不是只读代码块，跳过，避免和 Canvas 编辑器重复注入。
+	  function isCodeEditorElement(element) {
+	    const editorSelector = '.monaco-editor, .cm-editor, .CodeMirror, [contenteditable="true"]';
+	    if (element.matches(editorSelector)) return true;
+
+	    const scope = element.parentElement;
+	    if (!scope) return false;
+	    // closest 会匹配 scope 自身；querySelector 不会，容易漏掉「编辑器 > pre」这种结构。
+	    if (scope.closest(editorSelector)) return true;
+	    return Boolean(scope.querySelector(editorSelector));
+	  }
+
+	  let hostCodeIdSeed = 0;
+
+  // 每个代码块一个稳定 id：一屏多个代码块时，按钮不会串到别的代码上。
+  function ensureHostCodeId(element) {
+    const existing = element.getAttribute(HOST_CODE_ID_ATTR);
+    if (existing) return existing;
+
+    // 站点流式重渲染替换了整个 <pre>：若旧按钮/自建行还在、而旧 id 已无对应代码块，
+    // 复用这个 id，避免再注入一整套按钮造成重复。
+    const scope = element.parentElement;
+    if (scope) {
+      const orphanMarker = Array.from(scope.querySelectorAll(
+        `[${HOST_CODE_FOOTER_ATTR}][${HOST_CODE_ID_ATTR}], ` +
+        `[${HOST_CODE_HEADER_ATTR}][${HOST_CODE_ID_ATTR}], ` +
+        `[${GEMINI_FULLSCREEN_BUTTON_ATTR}][${HOST_CODE_ID_ATTR}]`
+      )).find((marker) => {
+        const id = marker.getAttribute(HOST_CODE_ID_ATTR);
+        return id && !document.querySelector(
+          `pre[${HOST_CODE_ID_ATTR}="${id}"], code[${HOST_CODE_ID_ATTR}="${id}"]`
+        );
+      });
+
+      if (orphanMarker) {
+        const reused = orphanMarker.getAttribute(HOST_CODE_ID_ATTR);
+        element.setAttribute(HOST_CODE_ID_ATTR, reused);
+        return reused;
+      }
+    }
+
+    hostCodeIdSeed += 1;
+    const id = `float-host-code-${hostCodeIdSeed}`;
+    element.setAttribute(HOST_CODE_ID_ATTR, id);
+    return id;
+  }
+
+	  function findHostCodeContainer(element) {
+	    let current = element.parentElement;
+	    let depth = 0;
+
+	    while (current && current !== document.body && current !== document.documentElement && depth < 5) {
+	      const identity = `${current.tagName} ${current.className || ''} ${current.getAttribute('data-test-id') || ''}`;
+	      if (/code[-_ ]?block|codeblock|code[-_ ]?container|code[-_ ]?snippet/i.test(identity)) return current;
+	      if (current.querySelectorAll('pre, code').length > 2) break;
+	      if (current.querySelector('button, [role="button"]')) return current;
+	      current = current.parentElement;
+	      depth += 1;
+	    }
+
+	    return element.parentElement;
+	  }
+
+	  // 千问把行号渲染成真实文本节点（截图里的 1~13），textContent 会把行号一起带进 postMessage，
+	  // 导致 <!DOCTYPE html> 前面多出数字、浏览器进入 quirks 模式，预览样式和手动复制代码时不一致。
+	  // 这里只对千问做清洗，其余站点沿用原来的 textContent 提取逻辑。
+	  const QIANWEN_HOSTS = ['qianwen.com', 'tongyi.aliyun.com'];
+
+	  function isQianwenCodeBlockPage() {
+	    const hostname = window.location.hostname.toLowerCase();
+	    return QIANWEN_HOSTS.some((host) => hostname === host || hostname.endsWith(`.${host}`));
+	  }
+
+	  function isSequentialNumbers(numbers) {
+	    return numbers.length >= 3 && numbers.every((number, index) => (
+	      index === 0 || number === numbers[index - 1] + 1
+	    ));
+	  }
+
+	  // 文本兜底：兼容「行号单独成列」与「行号贴在每行开头」两种 DOM 输出形态。
+	  function stripQianwenLineNumbers(text) {
+	    const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
+
+	    let leading = 0;
+	    while (leading < lines.length && /^[ \t\u00a0]*\d{1,4}[ \t\u00a0]*$/.test(lines[leading])) {
+	      leading += 1;
+	    }
+	    if (isSequentialNumbers(lines.slice(0, leading).map((line) => Number(line.trim())))) {
+	      return lines.slice(leading).join('\n').replace(/^\n+/, '');
+	    }
+
+	    if (lines.length >= 3) {
+	      const parsed = lines.map((line) => {
+	        const match = line.match(/^[ \t\u00a0]*(\d{1,4})(?:[ \t\u00a0]*\|[ \t\u00a0]*|[ \t\u00a0]+)?([\s\S]*)$/);
+	        return match ? { number: Number(match[1]), rest: match[2] } : null;
+	      });
+	      const hits = parsed.filter(Boolean);
+
+	      // 必须覆盖多数行且编号连续，避免误删以数字开头的代码（如 `1px solid`）。
+	      if (hits.length >= 3 && hits.length / lines.length >= 0.6 &&
+	          isSequentialNumbers(hits.map((hit) => hit.number))) {
+	        return lines.map((line, index) => (parsed[index] ? parsed[index].rest : line)).join('\n');
+	      }
+	    }
+
+	    return lines.join('\n');
+	  }
+
+	  // DOM 层面精确剔除行号节点：只有「内容是纯数字」且「类名/属性表明是行号」才删，
+	  // 避免误删 data-line-number 标记下真正的代码行。
+	  function isQianwenLineNumberNode(node) {
+	    if (!/^\s*\d{1,4}\s*$/.test(node.textContent || '')) return false;
+	    if (node.children.length) return false;
+
+	    const identity = [
+	      node.tagName,
+	      String(node.className || ''),
+	      Array.from(node.attributes || []).map((attr) => attr.name).join(' ')
+	    ].join(' ');
+
+	    return /line[-_ ]?(number|no|index)|lineno|linenums|gutter|hljs-ln|data-line/i.test(identity) ||
+	      node.getAttribute('aria-hidden') === 'true' ||
+	      node.getAttribute('data-line-number') !== null;
+	  }
+
+	  function readQianwenCode(element) {
+	    const clone = element.cloneNode(true);
+	    Array.from(clone.querySelectorAll('span, div, td, i, b, em, small')).forEach((node) => {
+	      if (isQianwenLineNumberNode(node)) node.remove();
+	    });
+	    return stripQianwenLineNumbers(clone.textContent);
+	  }
+
+	  // 豆包把行号渲染成真实 DOM 节点，且往往没有 line-number 类名。
+  // 仅当「纯数字 + 位于行容器首位」时才判定为行号，避免删掉代码里合法的数字行。
+  const DOUBAO_HOSTS = ['doubao.com'];
+
+  function isDoubaoCodeBlockPage() {
+    const hostname = window.location.hostname.toLowerCase();
+    return DOUBAO_HOSTS.some((host) => hostname === host || hostname.endsWith(`.${host}`));
+  }
+
+  function isDoubaoLineNumberNode(node) {
+    if (!node || node.nodeType !== 1 || node.children.length) return false;
+    if (!/^\s*\d{1,4}\s*$/.test(node.textContent || '')) return false;
+    if (isQianwenLineNumberNode(node)) return true;
+
+    const parent = node.parentElement;
+    if (!parent || !/line|row|gutter/i.test(String(parent.className || ''))) return false;
+    const siblings = Array.from(parent.childNodes);
+    const before = siblings.slice(0, siblings.indexOf(node));
+    return before.every((item) => item.nodeType === 3 && !item.nodeValue.trim());
+  }
+
+  // textContent 会丢掉 div / br / 按行渲染容器带来的换行：豆包的代码块常把每一行
+  // 拆成一个 <div class="line">，直接用 textContent 会把整段代码拼成一行，
+  // postMessage 里的内容因此「缺行 / 挤成一行」，预览样式自然与手动复制时不同。
+  function collectHostCodeText(root, isLineNumberNode) {
+    let out = '';
+    const blockTags = new Set(['DIV', 'P', 'LI', 'TR', 'SECTION']);
+
+    function walk(node) {
+      if (node.nodeType === 3) {
+        out += node.nodeValue;
+        return;
+      }
+      if (node.nodeType !== 1) return;
+
+      const element = node;
+      if (element.tagName === 'BR') {
+        out += '\n';
+        return;
+      }
+      if (isLineNumberNode(element)) return;
+
+      let isBlock = blockTags.has(element.tagName);
+      if (!isBlock && element !== root && /line|row/i.test(String(element.className || ''))) {
+        let display = '';
+        try { display = window.getComputedStyle(element).display || ''; } catch (error) { /* 忽略 */ }
+        isBlock = /^(block|flex|grid|list-item|table-row|flow-root)$/.test(display);
+      }
+
+      if (isBlock && out && !out.endsWith('\n')) out += '\n';
+      Array.from(element.childNodes).forEach(walk);
+      if (isBlock && !out.endsWith('\n')) out += '\n';
+    }
+
+    walk(root);
+    return out.replace(/\n{3,}/g, '\n\n');
+  }
+
+  function readDoubaoCode(element) {
+    if (!element) return '';
+
+    // 一个 <pre> 里可能有多个并列 <code>（每行一个），只取第一个就会丢掉后面的代码。
+    const codes = element.tagName === 'CODE'
+      ? [element]
+      : Array.from(element.querySelectorAll('code')).filter((item) => !item.querySelector('code'));
+
+    if (codes.length > 1) {
+      return codes
+        .map((code) => collectHostCodeText(code, isDoubaoLineNumberNode))
+        .join('\n')
+        .replace(/\n{3,}/g, '\n\n');
+    }
+
+    const structured = collectHostCodeText(element, isDoubaoLineNumberNode);
+    const plain = stripQianwenLineNumbers(element.textContent || '');
+
+    // 行号被剔除后 structured 会略短；若短得离谱说明结构化提取漏了内容，退回纯文本。
+    return structured.length >= plain.length * 0.6 ? structured : plain;
+  }
+
+  function readHostCode(element) {
+    if (!element) return '';
+    if (isDoubaoCodeBlockPage()) {
+      return normalizeExtractedGeminiCode(stripQianwenLineNumbers(readDoubaoCode(element)));
+    }
+    const codeElement = element.querySelector('code');
+    const target = codeElement || element;
+    const raw = isQianwenCodeBlockPage() ? readQianwenCode(target) : target.textContent;
+    return normalizeExtractedGeminiCode(raw);
+  }
+
+	  // 主流 markdown 渲染器用 <pre><code>；少数站点只有独立的多行 <code>。
+	  function findHostCodeBlocks() {
+	    if (!isSupportedCodeBlockPage()) return [];
+
+	    const pres = Array.from(document.querySelectorAll('pre'))
+	      .filter((element) => element instanceof HTMLElement);
+	    const standaloneCodes = Array.from(document.querySelectorAll('code'))
+	      .filter((element) => element instanceof HTMLElement)
+	      .filter((element) => !element.closest('pre'))
+	      .filter((element) => readHostCode(element).includes('\n'));
+
+	    return pres.concat(standaloneCodes)
+	      .filter(isVisiblePageElement)
+	      .filter((element) => !isCodeEditorElement(element))
+	      .filter((element) => readHostCode(element).length >= 8)
+	      .map((element) => ({
+	        element,
+	        codeId: ensureHostCodeId(element),
+	        container: findHostCodeContainer(element)
+	      }));
+	  }
+
+  // 收集代码块正上方各层祖先里的原生按钮（带几何信息），供通用 / Gemini 两套定位策略共用。
+  function collectHostCodeToolbarButtonEntries(element, container) {
+    const rect = element.getBoundingClientRect();
+    if (!rect.width || !rect.height) return [];
+
+    const scopes = [];
+    let current = element.parentElement;
+    for (let depth = 0; current && depth < 6 &&
+         current !== document.body && current !== document.documentElement; depth += 1) {
+      if (!scopes.includes(current)) scopes.push(current);
+      current = current.parentElement;
+    }
+    if (container && !scopes.includes(container)) scopes.push(container);
+
+    const seen = new Set();
+    const buttons = [];
+    scopes.forEach((scope) => {
+      Array.from(scope.querySelectorAll('button, [role="button"]'))
+        .filter((item) => item instanceof HTMLElement)
+        .filter((item) => !item.hasAttribute(GEMINI_FULLSCREEN_BUTTON_ATTR))
+        .filter((item) => !item.closest(`[${HOST_CODE_HEADER_ATTR}], [${HOST_CODE_FOOTER_ATTR}]`))
+        .filter(isVisiblePageElement)
+        .forEach((item) => {
+          if (seen.has(item)) return;
+          const itemRect = item.getBoundingClientRect();
+          // 严格限定在代码块正上方，避免抓到相邻代码块或页面其它 UI 的按钮。
+          if (itemRect.bottom > rect.top + 12) return;
+          if (itemRect.top < rect.top - 110) return;
+          if (itemRect.right < rect.left - 24 || itemRect.left > rect.right + 24) return;
+          seen.add(item);
+          buttons.push({ item, rect: itemRect });
+        });
+    });
+
+    return buttons;
+  }
+
+  function groupHostCodeButtonsByRow(buttons) {
+    const rows = [];
+    buttons.slice().sort((a, b) => a.rect.top - b.rect.top).forEach((entry) => {
+      const row = rows.find((candidate) => Math.abs(candidate.top - entry.rect.top) <= 10);
+      if (row) row.entries.push(entry);
+      else rows.push({ top: entry.rect.top, entries: [entry] });
+    });
+    return rows;
+  }
+
+  // 顶部「全屏」必须紧挨在站点自带工具栏第一个按钮的左边，且同一行。
+  // 从代码块向上收集若干层祖先，按几何位置挑出「正上方那一行的按钮组」，
+  // 再插到这一组最前面；插到末尾会被 flex 挤到下一行，或跑到最右边。
+  function getHostCodeHeaderInsertionPoint(container, element) {
+    const buttons = collectHostCodeToolbarButtonEntries(element, container);
+    if (!buttons.length) return null;
+
+	    // 按钮最多的一行是真正的工具栏行；并列时取离代码块最近的一行。
+	    const rows = groupHostCodeButtonsByRow(buttons);
+	    rows.sort((a, b) => (b.entries.length - a.entries.length) || (b.top - a.top));
+
+    const row = rows[0];
+    // 按从左到右排序，取这一行最左边的原生按钮作为锚点。
+    row.entries.sort((a, b) => a.rect.left - b.rect.left);
+    const first = row.entries[0].item;
+    if (!first.parentElement) return null;
+
+    // 只在同一父容器里插入，避免跨层级把按钮塞进 space-between / flex-wrap 的外层容器。
+    // 若这一行的按钮分属多个父容器，取「包含最多按钮」的那个父容器作为插入目标。
+    const parents = new Map();
+    row.entries.forEach((entry) => {
+      const parent = entry.item.parentElement;
+      if (!parent) return;
+      if (!parents.has(parent)) parents.set(parent, []);
+      parents.get(parent).push(entry);
+    });
+    if (!parents.size) return null;
+
+    let bestParent = first.parentElement;
+    let bestCount = 0;
+    parents.forEach((entries, parent) => {
+      if (entries.length > bestCount) {
+        bestCount = entries.length;
+        bestParent = parent;
+      }
+    });
+    const leftMostInBest = parents.get(bestParent)
+      .slice()
+      .sort((a, b) => a.rect.left - b.rect.left)[0].item;
+
+    return { parent: bestParent, before: leftMostInBest };
+  }
+
+  // Gemini 的头部是「语言标签一行 + 操作图标另一行」的两行工具栏。
+  // 试过按几何挑「离代码块最近的一行」插到图标左边，站点重排后仍会跑到 HTML 右侧。
+  // 按截图要求改为：不再插进原生工具栏，在代码块右上角（头部栏下方、代码区右上空白）
+  // 单独浮一个按钮。0 高度的 header 只作定位锚点，不占布局、不进 pre，
+  // 因此读取代码时不会把「全屏」二字混进 postMessage。仅 Gemini 使用。
+  function ensureGeminiCornerHeader(element, codeId) {
+    let header = findHostCodeRow(HOST_CODE_HEADER_ATTR, codeId);
+    if (!header) {
+      header = document.createElement('div');
+      header.setAttribute(HOST_CODE_HEADER_ATTR, 'true');
+      header.setAttribute(HOST_CODE_ID_ATTR, codeId);
+      element.insertAdjacentElement('beforebegin', header);
+    } else if (header.nextElementSibling !== element) {
+      // 站点流式重渲染换了 <pre>：把锚点挪回这个代码块正上方。
+      element.insertAdjacentElement('beforebegin', header);
+    }
+    header.setAttribute(HOST_CODE_CORNER_ATTR, 'true');
+    return header;
+  }
+
+  // 站点工具栏多为 flex + space-between，新增一个子项后可能被挤到下一行。
+  // 只给「真正插入按钮的那一个父容器」加 nowrap，不动页面其它布局。
+  function keepHostCodeToolbarOnOneLine(parent) {
+    if (!parent || parent.hasAttribute(HOST_CODE_NOWRAP_ATTR)) return;
+    let display = '';
+    try { display = window.getComputedStyle(parent).display || ''; } catch (error) { return; }
+    if (!/flex|grid/.test(display)) return;
+    parent.setAttribute(HOST_CODE_NOWRAP_ATTR, 'true');
+    parent.style.setProperty('flex-wrap', 'nowrap', 'important');
+  }
+
+  const hostCodeElementCache = new Map();
+
+  // 流式回答会重渲染 <pre> 节点，抹掉我们打的 data-float-host-code-id。
+  // 只靠 id 查元素会返回 null，进而把空内容送进 postMessage，预览看起来「丢了代码」。
+  function findNearestHostCodeElement(button) {
+    const buttonTop = button.getBoundingClientRect().top;
+    let scope = button.parentElement;
+
+    for (let depth = 0; scope && depth < 8; depth += 1, scope = scope.parentElement) {
+      const pres = Array.from(scope.querySelectorAll('pre'))
+        .filter((item) => item instanceof HTMLElement)
+        .filter((item) => !isCodeEditorElement(item))
+        .filter(isVisiblePageElement);
+      const codes = Array.from(scope.querySelectorAll('code'))
+        .filter((item) => item instanceof HTMLElement)
+        .filter((item) => !item.closest('pre'))
+        .filter((item) => !isCodeEditorElement(item))
+        .filter(isVisiblePageElement);
+      const candidates = pres.concat(codes);
+      if (!candidates.length) continue;
+
+      candidates.sort((left, right) => (
+        Math.abs(left.getBoundingClientRect().top - buttonTop) -
+        Math.abs(right.getBoundingClientRect().top - buttonTop)
+      ));
+      return candidates[0];
+    }
+
+    return null;
+  }
+
+  function getHostCodeElement(button) {
+    const id = button.getAttribute(HOST_CODE_ID_ATTR);
+    const tagged = id
+      ? document.querySelector(`pre[${HOST_CODE_ID_ATTR}="${id}"], code[${HOST_CODE_ID_ATTR}="${id}"]`)
+      : null;
+    if (tagged) return tagged;
+
+    const nearest = findNearestHostCodeElement(button);
+    if (nearest) return nearest;
+
+    return (id && hostCodeElementCache.get(id)) || null;
+  }
+
+	  // 自建行按 codeId 全局查找：站点重排 DOM 后也不会重复创建。
+	  function findHostCodeRow(attr, codeId) {
+	    return document.querySelector(`[${attr}][${HOST_CODE_ID_ATTR}="${codeId}"]`);
+	  }
+
+	  function ensureHostCodeHeader(element, codeId) {
+	    let header = findHostCodeRow(HOST_CODE_HEADER_ATTR, codeId);
+	    if (!header) {
+	      header = document.createElement('div');
+	      header.setAttribute(HOST_CODE_HEADER_ATTR, 'true');
+	      header.setAttribute(HOST_CODE_ID_ATTR, codeId);
+	      element.insertAdjacentElement('beforebegin', header);
+	    }
+	    return header;
+	  }
+
+	  // 代码块底部单独起一行，右对齐；width:100% 保证在 flex/grid 容器里都占满一行。
+	  function ensureHostCodeFooter(element, codeId) {
+	    let footer = findHostCodeRow(HOST_CODE_FOOTER_ATTR, codeId);
+	    if (!footer) {
+	      footer = document.createElement('div');
+	      footer.setAttribute(HOST_CODE_FOOTER_ATTR, 'true');
+	      footer.setAttribute(HOST_CODE_ID_ATTR, codeId);
+	      element.insertAdjacentElement('afterend', footer);
+	    }
+	    return footer;
+	  }
+
+	  function createHostCodeFullscreenButton(codeId, variant) {
+	    const button = document.createElement('button');
+	    button.type = 'button';
+	    button.className = 'float-host-code-fullscreen-btn';
+    button.setAttribute(GEMINI_FULLSCREEN_BUTTON_ATTR, 'true');
+    button.setAttribute(HOST_CODE_VARIANT_ATTR, variant);
+    button.setAttribute(HOST_CODE_ID_ATTR, codeId);
+    button.setAttribute(HOST_CODE_LAYOUT_ATTR, HOST_CODE_LAYOUT_VERSION);
+	    button.innerHTML = `${HOST_CODE_FULLSCREEN_ICON}<span>全屏</span>`;
+	    button.setAttribute('aria-label', '全屏');
+	    button.setAttribute('title', '在 preview.html 中全屏预览这段代码');
+
+	    ['pointerdown', 'mousedown', 'mouseup', 'dblclick', 'contextmenu'].forEach((eventName) => {
+	      button.addEventListener(eventName, (event) => {
+	        event.stopPropagation();
+	      }, true);
+	    });
+
+	    const runPreview = () => {
+	      runCodeFullscreenPreview(
+	        button,
+	        () => readHostCode(getHostCodeElement(button)),
+	        '没有读取到代码内容，请等代码生成完成后再试。'
+	      );
+	    };
+
+	    button.addEventListener('click', (event) => {
+	      event.preventDefault();
+	      event.stopImmediatePropagation();
+	      runPreview();
+	    }, true);
+
+	    button.addEventListener('keydown', (event) => {
+	      if (event.key !== 'Enter' && event.key !== ' ') {
+	        event.stopPropagation();
+	        return;
+	      }
+
+	      event.preventDefault();
+	      event.stopImmediatePropagation();
+	      runPreview();
+	    }, true);
+
+	    return button;
+	  }
+
+	  let hostCodeLegacyCleaned = false;
+
+	  // 旧版把按钮放在自建行里；升级后要清掉残留，否则 hasTop/hasBottom 会跳过重新定位。
+	  function cleanupLegacyHostCodeButtons() {
+	    if (hostCodeLegacyCleaned) return;
+	    hostCodeLegacyCleaned = true;
+
+	    Array.from(document.querySelectorAll(
+	      `[${GEMINI_FULLSCREEN_BUTTON_ATTR}][${HOST_CODE_VARIANT_ATTR}]`
+	    )).filter((button) => button.getAttribute(HOST_CODE_LAYOUT_ATTR) !== HOST_CODE_LAYOUT_VERSION)
+	      .forEach((button) => {
+	        const row = button.closest(`[${HOST_CODE_HEADER_ATTR}], [${HOST_CODE_FOOTER_ATTR}]`);
+	        button.remove();
+        if (row && !row.querySelector(`[${GEMINI_FULLSCREEN_BUTTON_ATTR}]`)) row.remove();
+      });
+
+    // 旧版曾给 Gemini 原生工具栏加过 nowrap；现在按钮不再插进去，顺手撤销这个副作用。
+    if (isGeminiPage()) {
+      Array.from(document.querySelectorAll(`[${HOST_CODE_NOWRAP_ATTR}]`)).forEach((parent) => {
+        parent.style.removeProperty('flex-wrap');
+        parent.style.removeProperty('white-space');
+        parent.removeAttribute(HOST_CODE_NOWRAP_ATTR);
+      });
+    }
+  }
+
+	  function getHostCodeButtons(codeId) {
+	    return Array.from(document.querySelectorAll(
+	      `[${GEMINI_FULLSCREEN_BUTTON_ATTR}][${HOST_CODE_VARIANT_ATTR}][${HOST_CODE_ID_ATTR}="${codeId}"]`
+	    )).filter((button) => button.getAttribute(HOST_CODE_LAYOUT_ATTR) === HOST_CODE_LAYOUT_VERSION);
+	  }
+
+	  function injectHostCodeFullscreenButtons() {
+	    if (!isSupportedCodeBlockPage()) return;
+	    cleanupLegacyHostCodeButtons();
+
+    findHostCodeBlocks().forEach(({ element, codeId, container }) => {
+      hostCodeElementCache.set(codeId, element);
+      const existingButtons = getHostCodeButtons(codeId);
+	      const hasTop = existingButtons.some((button) => button.getAttribute(HOST_CODE_VARIANT_ATTR) === 'top');
+	      const hasBottom = existingButtons.some((button) => button.getAttribute(HOST_CODE_VARIANT_ATTR) === 'bottom');
+	      if (hasTop && hasBottom) return;
+
+	      ensureHostCodeFullscreenStyle();
+
+      if (!hasTop) {
+        const gemini = isGeminiPage();
+        const insertionPoint = container && !gemini
+          ? getHostCodeHeaderInsertionPoint(container, element)
+          : null;
+        const topButton = createHostCodeFullscreenButton(codeId, 'top');
+
+        if (gemini) {
+          // 不再插原生工具栏：固定在代码块右上角，位置不受站点两行工具栏 / 重排影响。
+          ensureGeminiCornerHeader(element, codeId).appendChild(topButton);
+        } else if (insertionPoint && insertionPoint.parent) {
+          // before 为 null 时等价于 appendChild；落在原生工具栏父容器里即与原有按钮同一行。
+          insertionPoint.parent.insertBefore(topButton, insertionPoint.before);
+          keepHostCodeToolbarOnOneLine(insertionPoint.parent);
+        } else {
+          ensureHostCodeHeader(element, codeId).appendChild(topButton);
+        }
+      }
+
+	      if (!hasBottom) {
+	        ensureHostCodeFooter(element, codeId).appendChild(createHostCodeFullscreenButton(codeId, 'bottom'));
+	      }
+	    });
+	  }
+
+	  function getCodeFullscreenButtonGroup(button) {
+	    const id = button.getAttribute(HOST_CODE_ID_ATTR);
+	    if (!id) return [button];
+	    const siblings = getHostCodeButtons(id);
+	    return siblings.length ? siblings : [button];
+	  }
+
+	  // Canvas 与各站点回答内代码块共用同一条预览链路：读取代码 → 打开 preview.html → 渲染。
+  // 明确不写回便签编辑器，避免覆盖用户已经输入的内容。
+	  async function runCodeFullscreenPreview(button, readCode, emptyMessage) {
+	    const buttons = getCodeFullscreenButtonGroup(button);
 	    let previewWindow = null;
 
 	    try {
-	      setGeminiFullscreenButtonLabel(button, '读取中');
+	      buttons.forEach((item) => setGeminiFullscreenButtonLabel(item, '读取中'));
 	      previewWindow = openPreviewPlaceholderWindow();
-	      const code = await readGeminiCanvasCode(button);
-	      setEditorValuePreservingSelection(code);
-	      recordEditorContent(code);
-	      renderPreviewIntoWindow(code, previewWindow);
-	      flashGeminiFullscreenButtonLabel(button, '已打开');
-	      console.info('[Float] 已读取 Gemini Canvas 代码全文并打开全屏预览。');
+	      const code = normalizeExtractedGeminiCode(await readCode());
+
+	      if (!code) throw new Error(emptyMessage || '没有找到可预览的代码。');
+
+      // 只把代码送进预览窗口，不写回便签编辑器，避免覆盖用户已经输入的内容。
+      renderPreviewIntoWindow(code, previewWindow);
+      buttons.forEach((item) => flashGeminiFullscreenButtonLabel(item, '已打开'));
+      console.info('[Float] 已读取页面代码并打开全屏预览（未改动便签内容）。');
 	    } catch (error) {
-	      const message = error && error.message ? error.message : '读取 Gemini Canvas 代码失败。';
+	      const message = error && error.message ? error.message : '读取页面代码失败。';
 	      console.warn(`[Float] ${message}`);
 	      renderPreviewErrorIntoWindow(previewWindow, '预览失败', message);
-	      flashGeminiFullscreenButtonLabel(button, '读取失败', 'error');
+	      buttons.forEach((item) => flashGeminiFullscreenButtonLabel(item, '读取失败', 'error'));
 	    }
 	  }
 
-	  function initGeminiCanvasFullscreenInjection() {
-	    if (!isGeminiPage()) return;
+	  function previewGeminiCanvasCode(button) {
+	    return runCodeFullscreenPreview(
+	      button,
+	      () => readGeminiCanvasCode(button),
+	      '没有找到可预览的 Canvas 代码。请确认 Gemini Canvas 已打开，并且代码内容已经渲染出来。'
+	    );
+	  }
+
+	  function initHostCodeFullscreenInjection() {
+	    if (!isSupportedCodeBlockPage()) return;
 
 	    let scheduled = false;
 	    const scheduleInjection = () => {
@@ -3739,6 +4472,7 @@ createRoot(document.getElementById('root')).render(
 	      requestAnimationFrame(() => {
 	        scheduled = false;
 	        injectGeminiCanvasFullscreenButton();
+	        injectHostCodeFullscreenButtons();
 	      });
 	    };
 
@@ -3755,7 +4489,7 @@ createRoot(document.getElementById('root')).render(
 	    }, { once: true });
 	  }
 
-	  initGeminiCanvasFullscreenInjection();
+	  initHostCodeFullscreenInjection();
 
 	  downloadCancel.addEventListener('click', () => {
 	    hideDownloadDialog();
