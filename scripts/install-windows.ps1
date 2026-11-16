@@ -40,7 +40,13 @@ function Write-InstallLog {
 }
 
 function Invoke-Uninstall {
-  & reg.exe delete $RegKey /f 2>$null | Out-Null
+  # Same PowerShell 5.1 hazard as the updater: any stream-2 redirection on a
+  # native command turns harmless stderr into a terminating NativeCommandError
+  # under EAP Stop (reg.exe complains when the key is already gone). Do not
+  # redirect stderr at all, and relax EAP locally just in case.
+  $previousPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try { & reg.exe delete $RegKey /f | Out-Null } finally { $ErrorActionPreference = $previousPreference }
   foreach ($file in @($ManifestPath, $HostCmdPath, $EntryPath, $ConfigPath, $UpdaterCopyPath)) {
     if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force }
   }
@@ -109,7 +115,7 @@ function Invoke-Install {
     throw "没有在插件目录找到 manifest.json。当前识别到的插件目录是：$ExtensionDir`n请把 release zip 完整解压到一个独立目录，确认 manifest.json 在第一层，再运行该目录里的 scripts\install-windows.cmd。"
   }
   if (-not (Test-Path -LiteralPath (Join-Path $ExtensionDir 'native-host\updater-windows.ps1'))) {
-    throw "安装包缺少 native-host\updater-windows.ps1。当前插件目录：$ExtensionDir`n说明这个包不是带 Windows 支持的新版。请下载 v1.0.24 及以后的 extension-v*.zip 重新解压，或把新版仓库里的 native-host\updater-windows.ps1 复制到这个目录。"
+    throw "安装包缺少 native-host\updater-windows.ps1。当前插件目录：$ExtensionDir`n说明这个包不是带 Windows 支持的新版。请下载 v1.0.26 及以后的 extension-v*.zip 重新解压，或把新版仓库里的 native-host\updater-windows.ps1 复制到这个目录。"
   }
   if (Test-Path -LiteralPath (Join-Path $ExtensionDir '.git')) {
     Write-Warning '当前插件目录同时是 Git 仓库：可以继续安装，更新时也会保留 .git，但「立即更新」会覆盖这个目录里的工作区文件。建议改用独立解压目录。'
@@ -151,7 +157,9 @@ if (Test-Path -LiteralPath $localCopy) {
   } | ConvertTo-Json
   Write-Utf8File $ManifestPath ($hostManifest + "`r`n")
 
-  & reg.exe add $RegKey /ve /t REG_SZ /d $ManifestPath /f | Out-Null
+  $previousPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try { & reg.exe add $RegKey /ve /t REG_SZ /d $ManifestPath /f | Out-Null } finally { $ErrorActionPreference = $previousPreference }
   if ($LASTEXITCODE -ne 0) { throw '写入注册表失败，请确认当前 Windows 账户有 HKCU 写入权限。' }
   Write-InstallLog "Registry key written: $RegKey"
 
@@ -188,7 +196,7 @@ try {
   Write-Host '请按顺序排查：' -ForegroundColor Yellow
   Write-Host '  1. install-windows.cmd 和 install-windows.ps1 必须都在插件目录的 scripts\ 下'
   Write-Host '  2. 插件目录第一层要有 manifest.json，且 native-host\updater-windows.ps1 存在'
-  Write-Host '  3. 解压的必须是 v1.0.24 及以后的 release zip（v1.0.23 及更早的 Windows 脚本有问题）'
+  Write-Host '  3. 解压的必须是 v1.0.26 及以后的 release zip（v1.0.23 的安装脚本、v1.0.24 / v1.0.25 的 Windows updater 有问题）'
   Write-Host '  4. 右键 install-windows.cmd → 属性 → 勾选「解除锁定」→ 应用，再双击'
   Write-Host ''
   Write-Host "安装日志：$InstallLog" -ForegroundColor Yellow

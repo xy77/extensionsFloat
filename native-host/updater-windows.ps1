@@ -140,9 +140,25 @@ function Compare-Semver {
 
 function Clear-DirectoryContents {
   param([string]$Path)
-  Get-ChildItem -LiteralPath $Path -Force |
-    Where-Object { $_.Name -ne $script:BackupDirName -and $_.Name -ne '.git' } |
-    ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
+  # Materialise the list BEFORE deleting: streaming Get-ChildItem while removing
+  # its own children can raise spurious errors on Windows. Chrome or an AV scan
+  # may also hold a file open briefly, so retry a few times instead of failing
+  # the whole update.
+  $items = @(Get-ChildItem -LiteralPath $Path -Force |
+    Where-Object { $_.Name -ne $script:BackupDirName -and $_.Name -ne '.git' })
+
+  foreach ($item in $items) {
+    if (-not (Test-Path -LiteralPath $item.FullName)) { continue }
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+      try {
+        Remove-Item -LiteralPath $item.FullName -Recurse -Force -ErrorAction Stop
+        break
+      } catch {
+        if ($attempt -eq 3) { throw }
+        Start-Sleep -Milliseconds 300
+      }
+    }
+  }
 }
 
 function Copy-DirectoryContents {
@@ -186,14 +202,70 @@ function Restore-PreservedEntries {
 function Download-Zip {
   param([string]$Url, [string]$Target)
   $curl = Join-Path $env:SystemRoot 'System32\curl.exe'
+
   if (Test-Path -LiteralPath $curl) {
-    & $curl -fL --retry 2 --connect-timeout 20 --max-time 300 -A 'float-extension-updater' -o $Target $Url 2>$null
-    if ($LASTEXITCODE -ne 0) { Fail 'DOWNLOAD_FAILED' '下载失败：请检查网络，以及 GitHub Release 是否可匿名访问。' }
+    # Windows PowerShell 5.1 wraps EVERY line a native program writes to stderr
+    # into an ErrorRecord. With $ErrorActionPreference = 'Stop' this becomes a
+    # terminating error even when the program exits 0. curl.exe prints its
+    # progress meter to stderr by default, so the previous `2>$null` form made
+    # every Windows update abort during the download.
+    #
+    # Fix: let curl write its own stderr straight into a file (--stderr), so
+    # PowerShell never has to redirect stream 2 at all; -sS silences the
+    # progress but keeps real errors; success is judged ONLY by $LASTEXITCODE.
+    $curlErrPath = ($Target + '.curl.err')
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $curlExit = 0
+    try {
+      & $curl -fsSL --retry 2 --connect-timeout 20 --max-time 300 `
+        -A 'float-extension-updater' --stderr $curlErrPath -o $Target $Url | Out-Null
+      $curlExit = $LASTEXITCODE
+    } catch {
+      # Defensive: some 5.1 builds still surface a NativeCommandError.
+      Write-Log ('curl invocation warning: ' + $_.Exception.Message)
+      $curlExit = $LASTEXITCODE
+    } finally {
+      $ErrorActionPreference = $previousPreference
+    }
+
+    if ($curlExit -ne 0) {
+      $detail = ''
+      if (Test-Path -LiteralPath $curlErrPath) {
+        $detail = ([System.IO.File]::ReadAllText($curlErrPath)).Trim()
+      }
+      if ($detail) { Write-Log ('curl stderr: ' + $detail) }
+      Fail 'DOWNLOAD_FAILED' "下载失败（curl 退出码 $curlExit）：请检查网络，以及 GitHub Release 是否可匿名访问。"
+    }
   } else {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     Invoke-WebRequest -Uri $Url -OutFile $Target -UseBasicParsing -TimeoutSec 300
   }
+
   if (-not (Test-Path -LiteralPath $Target)) { Fail 'DOWNLOAD_FAILED' '下载失败：没有生成更新包文件。' }
+  if ((Get-Item -LiteralPath $Target).Length -le 0) { Fail 'DOWNLOAD_FAILED' '下载失败：更新包是空文件。' }
+}
+
+function Expand-UpdateArchive {
+  param([string]$ZipPath, [string]$Destination)
+
+  if (Test-Path -LiteralPath $Destination) {
+    Remove-Item -LiteralPath $Destination -Recurse -Force
+  }
+
+  # .NET ZipFile tolerates Linux `zip -r` archives (directory entries, forward
+  # slashes) better than PowerShell 5.1's Expand-Archive. If the assembly is
+  # unavailable, fall back to the cmdlet instead of failing the whole update.
+  try {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $Destination)
+  } catch {
+    Write-Log ('ZipFile extraction failed; retrying with Expand-Archive: ' + $_.Exception.Message)
+    if (Test-Path -LiteralPath $Destination) {
+      Remove-Item -LiteralPath $Destination -Recurse -Force
+    }
+    Expand-Archive -LiteralPath $ZipPath -DestinationPath $Destination -Force -ErrorAction Stop
+  }
 }
 
 function Get-PackageRoot {
@@ -245,32 +317,42 @@ function Invoke-Update {
   $extractedDir = Join-Path $tempDir 'extracted'
   $preservedDir = Join-Path $tempDir 'preserved'
 
+  $stage = '下载更新包'
   try {
     Write-Log ("update $currentVersion -> $latestVersion from $downloadUrl")
     Download-Zip -Url $downloadUrl -Target $zipPath
 
+    $stage = 'sha256 校验'
     if ($sha256) {
       $actual = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
       if ($actual -ne $sha256) { Fail 'HASH_MISMATCH' '下载包 sha256 校验失败。' }
     }
 
-    Expand-Archive -LiteralPath $zipPath -DestinationPath $extractedDir -Force
+    $stage = '解压更新包'
+    Expand-UpdateArchive -ZipPath $zipPath -Destination $extractedDir
     $packageRoot = Get-PackageRoot $extractedDir
 
+    $stage = '版本核对'
     $packageManifest = Get-Content -LiteralPath (Join-Path $packageRoot 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     if ([string]$packageManifest.version -ne $latestVersion) {
       Fail 'VERSION_MISMATCH' "更新包版本 $($packageManifest.version) 与 latest.json $latestVersion 不一致。"
     }
 
+    $stage = '备份当前版本'
     $backupRoot = Join-Path $extensionDir $script:BackupDirName
     $stamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH-mm-ssZ')
     $script:BackupDir = Join-Path $backupRoot ("backup-$stamp-$PID")
     $null = [System.IO.Directory]::CreateDirectory($script:BackupDir)
     Copy-DirectoryContents -Source $extensionDir -Destination $script:BackupDir -ExcludeNames @($script:BackupDirName, '.git')
 
+    $stage = '保存本机配置'
     Save-PreservedEntries -ExtensionDir $extensionDir -PreservedDir $preservedDir
+
+    $stage = '替换插件文件'
     Clear-DirectoryContents $extensionDir
     Copy-DirectoryContents -Source $packageRoot -Destination $extensionDir
+
+    $stage = '恢复本机配置'
     Restore-PreservedEntries -PreservedDir $preservedDir -ExtensionDir $extensionDir
 
     Write-Log ("updated to $latestVersion, backup: $($script:BackupDir)")
@@ -281,7 +363,9 @@ function Invoke-Update {
       message = 'updated'
     }
   } catch {
-    Fail 'UPDATE_FAILED' ('更新失败：' + $_.Exception.Message) -Rollback
+    $detail = $_.Exception.Message
+    Write-Log ("UPDATE_FAILED at $stage : $detail")
+    Fail 'UPDATE_FAILED' "更新失败（$stage）：$detail。详细日志：$($script:LogPath)" -Rollback
   } finally {
     try { Remove-Item -LiteralPath $tempDir -Recurse -Force } catch { }
   }

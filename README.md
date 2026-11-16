@@ -38,7 +38,7 @@ Float 是一个私下分发的 Chrome unpacked extension。它不依赖 Chrome W
 
 ### Windows（最简单，全程只需双击一次）
 
-1. 从 GitHub Release 下载 **v1.0.24 及以后** 的 `extension-v<version>.zip`（v1.0.23 的安装脚本有 `-NonInteractive` 问题，v1.0.22 及更早的包里没有 Windows 文件）。
+1. 从 GitHub Release 下载 **v1.0.26 及以后** 的 `extension-v<version>.zip`（v1.0.23 的安装脚本有 `-NonInteractive` 问题；**v1.0.24 / v1.0.25 的 Windows updater 会在下载阶段报错，无法自动更新**，见下方「Windows 点立即更新报错」；v1.0.22 及更早的包里没有 Windows 文件）。
 2. 解压到固定目录，例如 `C:\Users\<你>\float-extension`，确保 `manifest.json` 位于这个目录的第一层。`scripts\install-windows.cmd` 和 `scripts\install-windows.ps1` 必须一起保留。
 3. 打开 Chrome → `chrome://extensions` → 开启「开发者模式」→「加载已解压的扩展程序」，选择该目录，然后复制扩展卡片上的 **Extension ID**。
 4. 双击目录里的 `scripts\install-windows.cmd`。窗口会先显示插件目录和 PowerShell 版本，然后出现 `Extension ID:` 提示；粘贴 ID 回车，看到「Native Host 自检通过」即完成。
@@ -118,16 +118,16 @@ Native Messaging 的 `allowed_origins` 必须写入准确的 Extension ID。
 
 最少操作：
 
-1. 修改 `manifest.json` 的 `version`，版本号使用 semver，例如从 `1.0.24` 改到 `1.0.25`。
-2. 在 GitHub Desktop 里写 commit message，例如 `Release v1.0.25`。
+1. 修改 `manifest.json` 的 `version`，版本号使用 semver，例如从 `1.0.25` 改到 `1.0.26`。
+2. 在 GitHub Desktop 里写 commit message，例如 `Release v1.0.26`。
 3. Commit to main → Push origin。
 4. GitHub Actions 发布完成后，在浏览器里右键 Float 悬浮按钮，点击「检查更新」。
 
 push 后 GitHub Actions 会自动：
 
 - 读取 `manifest.json` 的版本号
-- 创建 tag，例如 `v1.0.25`
-- 打包 `extension-v1.0.25.zip`
+- 创建 tag，例如 `v1.0.26`
+- 打包 `extension-v1.0.26.zip`
 - 生成 `latest.json`
 - 创建 GitHub Release 并上传 zip 与 `latest.json`
 
@@ -155,8 +155,8 @@ https://github.com/xy77/extensionsFloat/releases/latest/download/latest.json
 
 ```json
 {
-  "version": "1.0.25",
-  "downloadUrl": "https://github.com/xy77/extensionsFloat/releases/download/v1.0.25/extension-v1.0.25.zip",
+  "version": "1.0.26",
+  "downloadUrl": "https://github.com/xy77/extensionsFloat/releases/download/v1.0.26/extension-v1.0.26.zip",
   "sha256": "release zip sha256",
   "changelog": "更新说明"
 }
@@ -200,9 +200,26 @@ GITHUB_REPO=xy77/extensionsFloat ./scripts/package-release.sh
 
 ## 常见问题
 
+`Windows 点「立即更新」报错，macOS 却正常`
+
+v1.0.24 / v1.0.25 的 Windows updater 在**下载阶段**必失败：`Download-Zip` 用了 `curl.exe ... 2>$null`，而脚本顶部是 `$ErrorActionPreference = 'Stop'`。Windows PowerShell 5.1 会把原生命令写到 stderr 的每一行包装成 `ErrorRecord`，在 `Stop` 模式下直接变成终止性错误；`curl.exe` 默认把进度条写到 stderr，于是下载还没完成就被中断，界面显示「更新失败」。macOS 走 bash，没有这个行为。v1.0.26 已修复：curl 改为 `-fsSL`、下载期间临时放宽 EAP、只按 `$LASTEXITCODE` 判断成败，并增加了分阶段报错和解压回退。
+
+**坏掉的正是「执行更新」的那个脚本，所以已经装了 v1.0.24 / v1.0.25 的 Windows 电脑没法靠自动更新拿到修复**，需要一次性手动处理，任选一种：
+
+1. **推荐**：从 GitHub Release 下载 `extension-v1.0.26.zip`，解压覆盖到插件目录，然后在 `chrome://extensions` 点该扩展的刷新按钮。之后恢复正常，后续照常自动更新。
+2. **只修 updater**：在 PowerShell 里执行下面三行（从仓库拉取修好的 `updater-windows.ps1` 写入插件目录与宿主目录），重启 Chrome 后再点「立即更新」。注意要先 push 修复到 main 才会生效。
+
+```powershell
+$d = (Get-Content "$env:LOCALAPPDATA\FloatExtension\config.json" -Raw -Encoding UTF8 | ConvertFrom-Json).extensionDir
+& "$env:SystemRoot\System32\curl.exe" -fsSL 'https://raw.githubusercontent.com/xy77/extensionsFloat/main/native-host/updater-windows.ps1' -o "$d\native-host\updater-windows.ps1"
+Copy-Item "$d\native-host\updater-windows.ps1" "$env:LOCALAPPDATA\FloatExtension\updater-windows.ps1" -Force
+```
+
+排查日志：`%TEMP%\float-updater-windows.log`。新版会记录失败具体发生在哪个阶段（下载 / sha256 校验 / 解压 / 版本核对 / 备份 / 替换 / 恢复），报错文字里也会带上阶段和日志路径。
+
 `双击 install-windows.cmd 后直接报错，没有让我粘贴 ID`
 
-早期版本的安装入口带了 `-NonInteractive`，PowerShell 在该模式下执行 `Read-Host` 会直接抛错；另外目录检查被放在输入之前，遇到 Git 仓库或旧安装包时会先失败。已修复：请更新 `scripts\install-windows.cmd` 与 `scripts\install-windows.ps1`（或重新下载 v1.0.24 及以后的 zip）。新版窗口会先显示插件目录、PowerShell 版本，再要求粘贴 ID；任何异常都会输出中文原因和排查清单。若仍失败，把窗口文字或 `%TEMP%\float-install-windows.log` 发我。
+早期版本的安装入口带了 `-NonInteractive`，PowerShell 在该模式下执行 `Read-Host` 会直接抛错；另外目录检查被放在输入之前，遇到 Git 仓库或旧安装包时会先失败。已修复：请更新 `scripts\install-windows.cmd` 与 `scripts\install-windows.ps1`（或直接重新下载 v1.0.26 及以后的 zip）。新版窗口会先显示插件目录、PowerShell 版本，再要求粘贴 ID；任何异常都会输出中文原因和排查清单。若仍失败，把窗口文字或 `%TEMP%\float-install-windows.log` 发我。
 
 `本机 updater 还没有安装`
 
@@ -231,7 +248,7 @@ Windows 上先看 `%TEMP%\float-updater-windows.log`，再按顺序检查：插�
 
 `下载失败`
 
-确认 GitHub Release 是 public，`latest.json` 中的 `downloadUrl` 可以匿名访问。Windows 优先使用系统自带 `curl.exe`（Windows 10 1803+），老系统会回退到 `Invoke-WebRequest`。
+确认 GitHub Release 是 public，`latest.json` 中的 `downloadUrl` 可以匿名访问。Windows 优先使用系统自带 `curl.exe`（Windows 10 1803+），老系统会回退到 `Invoke-WebRequest`；v1.0.26 起下载改用 `-fsSL` 并单独判断退出码，不会再被 PowerShell 5.1 的 stderr 误判打断。
 
 `下载包 sha256 校验失败`
 
