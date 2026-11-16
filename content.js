@@ -3803,6 +3803,31 @@ createRoot(document.getElementById('root')).render(
 	        color: #b3261e !important;
 	      }
 
+      /* Gemini 全屏按钮使用独立配色，避免深色代码块的继承色让按钮不可见。 */
+      .float-host-code-fullscreen-btn[data-float-code-contrast] {
+        border: 1px solid #c5c7cb !important;
+        border-radius: 6px !important;
+        background: #e8eaed !important;
+        color: #202124 !important;
+        opacity: 1 !important;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, .16) !important;
+      }
+
+      .float-host-code-fullscreen-btn[data-float-code-contrast] > span,
+      .float-host-code-fullscreen-btn[data-float-code-contrast] > svg {
+        color: #202124 !important;
+        opacity: 1 !important;
+      }
+
+      .float-host-code-fullscreen-btn[data-float-code-contrast]:hover {
+        background: #dadce0 !important;
+      }
+
+      .float-host-code-fullscreen-btn[data-float-code-contrast]:focus-visible {
+        outline: 2px solid #80868b !important;
+        outline-offset: 2px !important;
+      }
+
       /* 找不到原生工具栏时自建的一行；按钮样式与插入原生行的完全一致 */
       [${HOST_CODE_HEADER_ATTR}],
       [${HOST_CODE_FOOTER_ATTR}] {
@@ -4306,6 +4331,7 @@ createRoot(document.getElementById('root')).render(
     button.setAttribute(HOST_CODE_VARIANT_ATTR, variant);
     button.setAttribute(HOST_CODE_ID_ATTR, codeId);
     button.setAttribute(HOST_CODE_LAYOUT_ATTR, HOST_CODE_LAYOUT_VERSION);
+    if (isGeminiPage()) button.setAttribute('data-float-code-contrast', 'true');
 	    button.innerHTML = `${HOST_CODE_FULLSCREEN_ICON}<span>全屏</span>`;
 	    button.setAttribute('aria-label', '全屏');
 	    button.setAttribute('title', '在 preview.html 中全屏预览这段代码');

@@ -30,6 +30,10 @@ Float 是一个私下分发的 Chrome unpacked extension。它不依赖 Chrome W
 - `scripts/build-local.sh`: 生成 `dist/` 本地测试包，不发版、不改版本号、不改 `latest.json`。
 - `.gitattributes`: 保证 `*.cmd` 在 Windows / GitHub Actions 上都是 CRLF 换行。
 
+## v1.0.28 修复说明
+
+- Gemini 普通代码块「全屏」按钮位置沿用原有布局，样式改为浅灰填充、深色文字、1px 浅灰描边和轻阴影，提高深色代码块上的可见度。
+
 ## v1.0.27 修复说明
 
 - Windows：保留 v1.0.26 对 PowerShell 5.1 / curl stderr 的修复；新增 curl 失败时的系统下载通道回退和启动失败诊断。旧版 v1.0.24 / v1.0.25 需先手动覆盖新版 updater 或安装包，才能恢复自动更新。
