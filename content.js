@@ -15,23 +15,10 @@
     if (window.__float_external_preview_receiver__) return;
     window.__float_external_preview_receiver__ = true;
 
-    // 发送端会按 80ms 重发同一个 payload 直到收到 ack，接收端必须按 id 去重，
-    // 否则每次重发都会 document.write 一遍整页，造成闪烁甚至把新预览覆盖成旧内容。
-    let lastRenderedPayloadId = '';
-
-    function renderExternalPreviewHtml(htmlContent) {
-      const content = typeof htmlContent === 'string' ? htmlContent : '';
-      const titleMatch = content.match(/<title>([\s\S]*?)<\/title>/i);
-
-      localStorage.setItem(EXTERNAL_PREVIEW_STORAGE_KEY, content);
-      document.open();
-      document.write(content);
-      document.close();
-
-      if (titleMatch && titleMatch[1]) {
-        document.title = titleMatch[1].trim();
-      }
-    }
+    // 网页自身会在加载时读取 zen_preview_html 并渲染。这里只保存并刷新，
+    // 避免在消息回调里异步 document.write 导致外部脚本被浏览器拦截。
+    // 重发可能跨越导航，用 sessionStorage 去重，防止同一消息反复刷新。
+    const payloadIdKey = 'float_preview_payload_id';
 
     function renderExternalPreviewError(message) {
       const safeMessage = String(message || '预览失败。')
@@ -51,14 +38,18 @@
 
       const payloadId = data.payload && data.payload.id ? data.payload.id : '';
 
-      // 只透传 payload.frameHtml，不在这里二次加工，保证与 buildPreviewPayload 生成的文档一致。
-      if (!payloadId || payloadId !== lastRenderedPayloadId) {
-        lastRenderedPayloadId = payloadId;
-        try {
-          renderExternalPreviewHtml(data.payload && data.payload.frameHtml);
-        } catch (error) {
-          renderExternalPreviewError(error && error.message ? error.message : '无法写入预览内容。');
+      let shouldReload = false;
+      try {
+        if (!payloadId || sessionStorage.getItem(payloadIdKey) !== payloadId) {
+          const html = data.payload && data.payload.frameHtml;
+          if (typeof html !== 'string') throw new Error('预览内容无效。');
+          localStorage.setItem(EXTERNAL_PREVIEW_STORAGE_KEY, html);
+          sessionStorage.setItem(payloadIdKey, payloadId);
+          shouldReload = true;
         }
+      } catch (error) {
+        renderExternalPreviewError(error && error.message ? error.message : '无法保存预览内容。');
+        return;
       }
 
       if (event.source && payloadId) {
@@ -68,6 +59,7 @@
           id: payloadId
         }, event.origin || '*');
       }
+      if (shouldReload) window.location.reload();
     });
   }
 
@@ -3049,7 +3041,7 @@ createRoot(document.getElementById('root')).render(
     }
 
 	    function handleAck(event) {
-	      if (event.origin !== EXTERNAL_PREVIEW_ORIGIN) return;
+	      if (event.origin !== EXTERNAL_PREVIEW_ORIGIN || event.source !== previewWindow) return;
 	      const data = event.data;
 	      if (!data || typeof data !== 'object') return;
 	      if (data.source !== PREVIEW_MESSAGE_SOURCE || data.type !== PREVIEW_ACK_MESSAGE_TYPE) return;

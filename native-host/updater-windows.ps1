@@ -13,7 +13,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$script:HostVersion = '1.1.0-windows'
+$script:HostVersion = '1.1.1-windows'
 $script:BackupDirName = 'backups'
 $script:PreservePaths = @('.env', 'config.local.json', 'data', 'logs', 'native-host/config.json')
 $script:LogPath = Join-Path $env:TEMP 'float-updater-windows.log'
@@ -203,6 +203,7 @@ function Download-Zip {
   param([string]$Url, [string]$Target)
   $curl = Join-Path $env:SystemRoot 'System32\curl.exe'
 
+  $downloaded = $false
   if (Test-Path -LiteralPath $curl) {
     # Windows PowerShell 5.1 wraps EVERY line a native program writes to stderr
     # into an ErrorRecord. With $ErrorActionPreference = 'Stop' this becomes a
@@ -216,7 +217,7 @@ function Download-Zip {
     $curlErrPath = ($Target + '.curl.err')
     $previousPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    $curlExit = 0
+    $curlExit = -1
     try {
       & $curl -fsSL --retry 2 --connect-timeout 20 --max-time 300 `
         -A 'float-extension-updater' --stderr $curlErrPath -o $Target $Url | Out-Null
@@ -224,7 +225,7 @@ function Download-Zip {
     } catch {
       # Defensive: some 5.1 builds still surface a NativeCommandError.
       Write-Log ('curl invocation warning: ' + $_.Exception.Message)
-      $curlExit = $LASTEXITCODE
+      $curlExit = -1
     } finally {
       $ErrorActionPreference = $previousPreference
     }
@@ -235,11 +236,23 @@ function Download-Zip {
         $detail = ([System.IO.File]::ReadAllText($curlErrPath)).Trim()
       }
       if ($detail) { Write-Log ('curl stderr: ' + $detail) }
-      Fail 'DOWNLOAD_FAILED' "下载失败（curl 退出码 $curlExit）：请检查网络，以及 GitHub Release 是否可匿名访问。"
+      Write-Log ("curl failed with exit code $curlExit; retrying with Invoke-WebRequest.")
+    } else {
+      $downloaded = $true
     }
-  } else {
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest -Uri $Url -OutFile $Target -UseBasicParsing -TimeoutSec 300
+  }
+
+  if (-not $downloaded) {
+    # Browser fetch and system curl use different proxy / TLS stacks. Try the
+    # Windows .NET stack as well when curl exists but cannot reach the asset.
+    try {
+      [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+      Invoke-WebRequest -Uri $Url -OutFile $Target -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
+    } catch {
+      $detail = $_.Exception.Message
+      Write-Log ('Invoke-WebRequest download failed: ' + $detail)
+      Fail 'DOWNLOAD_FAILED' "下载失败：$detail。请检查 Windows 系统代理和 GitHub Release 访问权限。详细日志：$($script:LogPath)"
+    }
   }
 
   if (-not (Test-Path -LiteralPath $Target)) { Fail 'DOWNLOAD_FAILED' '下载失败：没有生成更新包文件。' }
