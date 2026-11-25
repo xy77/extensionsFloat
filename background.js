@@ -103,8 +103,16 @@ async function handleUpdate(payload) {
   };
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message !== 'object') return false;
+  if (message.type === 'float-ui:get-zoom') {
+    if (!sender.tab) return false;
+    chrome.tabs.getZoom(sender.tab.id, (zoomFactor) => {
+      const error = chrome.runtime.lastError;
+      sendResponse({ zoomFactor: error ? 1 : zoomFactor });
+    });
+    return true;
+  }
 
   const run = async () => {
     if (message.type === UPDATE_MESSAGE_TYPES.STATUS) {
@@ -135,4 +143,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     });
 
   return true;
+});
+
+// 使用浏览器提供的真实网页缩放值，避免把显示器 DPI 当成网页缩放。
+chrome.tabs.onZoomChange.addListener(({ tabId, newZoomFactor }) => {
+  chrome.tabs.sendMessage(tabId, { type: 'float-ui:zoom-changed', zoomFactor: newZoomFactor }, () => {
+    void chrome.runtime.lastError; // 未注入插件的标签页无需处理。
+  });
 });

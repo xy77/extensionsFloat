@@ -94,6 +94,59 @@
   });
   document.documentElement.appendChild(host);
 
+  let pageZoom = 1;
+  let memoViewportWidth = window.innerWidth;
+  let memoViewportHeight = window.innerHeight;
+  let memoLayoutReady = false;
+  // 浏览器网页缩放与触摸板的可视区域缩放是两个独立比例。
+  const memoScale = () => pageZoom * (window.visualViewport ? window.visualViewport.scale : 1);
+  const memoViewport = () => ({
+    width: (window.visualViewport ? window.visualViewport.width : window.innerWidth) * memoScale(),
+    height: (window.visualViewport ? window.visualViewport.height : window.innerHeight) * memoScale()
+  });
+  const memoPointerX = (event) => (event.clientX - (window.visualViewport ? window.visualViewport.offsetLeft : 0)) * memoScale();
+  const memoPointerY = (event) => (event.clientY - (window.visualViewport ? window.visualViewport.offsetTop : 0)) * memoScale();
+
+  function applyMemoZoom(zoomFactor) {
+    if (!(zoomFactor > 0)) return;
+    pageZoom = zoomFactor;
+    const scale = memoScale();
+    host.style.setProperty('zoom', String(1 / scale), 'important');
+    // 手势缩放后可视区域还能平移，将 UI 原点跟到当前可视区域左上角。
+    host.style.setProperty('left', `${(window.visualViewport ? window.visualViewport.offsetLeft : 0) * scale}px`, 'important');
+    host.style.setProperty('top', `${(window.visualViewport ? window.visualViewport.offsetTop : 0) * scale}px`, 'important');
+    const viewport = memoViewport();
+    if (memoLayoutReady) {
+      state.x = clamp(state.x * viewport.width / memoViewportWidth, 0, Math.max(0, viewport.width - 56));
+      state.y = clamp(state.y * viewport.height / memoViewportHeight, 0, Math.max(0, viewport.height - 56));
+      updateLayout();
+    }
+    memoViewportWidth = viewport.width;
+    memoViewportHeight = viewport.height;
+  }
+
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message && message.type === 'float-ui:zoom-changed') applyMemoZoom(message.zoomFactor);
+  });
+  window.addEventListener('resize', () => {
+    chrome.runtime.sendMessage({ type: 'float-ui:get-zoom' }, (response) => {
+      if (!chrome.runtime.lastError && response) applyMemoZoom(response.zoomFactor);
+    });
+  });
+
+  if (window.visualViewport) {
+    let viewportFrame = null;
+    const syncVisualViewport = () => {
+      if (viewportFrame !== null) return;
+      viewportFrame = window.requestAnimationFrame(() => {
+        viewportFrame = null;
+        applyMemoZoom(pageZoom);
+      });
+    };
+    window.visualViewport.addEventListener('resize', syncVisualViewport);
+    window.visualViewport.addEventListener('scroll', syncVisualViewport);
+  }
+
   const shadow = host.attachShadow({ mode: 'closed' });
 
   // 注入样式
@@ -950,7 +1003,11 @@
 		  }
 
   // 初始化加载
-  chrome.storage.local.get([STORAGE_KEY], (res) => {
+  chrome.runtime.sendMessage({ type: 'float-ui:get-zoom' }, (response) => {
+    const error = chrome.runtime.lastError;
+    applyMemoZoom(!error && response ? response.zoomFactor : 1);
+    state.x = memoViewport().width - 100;
+    chrome.storage.local.get([STORAGE_KEY], (res) => {
     if (res[STORAGE_KEY]) {
       const saved = res[STORAGE_KEY];
       state.w = Math.max(MIN_WIDTH, saved.w || 380);
@@ -963,11 +1020,12 @@
 	      state.contentUpdatedAt = getContentUpdatedAt(saved);
 
 	      // 防止主包装越界
-      const maxLeft = window.innerWidth - 56 - 20;
-      const maxTop = window.innerHeight - 56 - 20;
-      state.x = Math.min(Math.max(20, saved.x || window.innerWidth - 100), maxLeft);
+      const maxLeft = memoViewport().width - 56 - 20;
+      const maxTop = memoViewport().height - 56 - 20;
+      state.x = Math.min(Math.max(20, saved.x || memoViewport().width - 100), maxLeft);
       state.y = Math.min(Math.max(20, saved.y || 100), maxTop);
     }
+    memoLayoutReady = true;
     updateLayout();
 	    applySyncedContent(state.content, state.contentUpdatedAt);
     
@@ -978,6 +1036,8 @@
     if (state.isOpen) {
       drawParticles();
     }
+  });
+
   });
 
 	  chrome.storage.local.get([UPDATE_BADGE_STORAGE_KEY], (res) => {
@@ -1188,11 +1248,11 @@
       wrapper.style.transition = '';
 
       const rect = wrapper.getBoundingClientRect();
-      initialAiX = e.clientX - rect.left;
-      initialAiY = e.clientY - rect.top;
+      initialAiX = (e.clientX - rect.left) * memoScale();
+      initialAiY = (e.clientY - rect.top) * memoScale();
 
-      let latestX = e.clientX;
-      let latestY = e.clientY;
+      let latestX = memoPointerX(e);
+      let latestY = memoPointerY(e);
       let dragFrame = null;
 
 	      const applyDrag = () => {
@@ -1209,8 +1269,8 @@
 
       const moveDrag = (ev) => {
         ev.preventDefault();
-        latestX = ev.clientX;
-        latestY = ev.clientY;
+        latestX = memoPointerX(ev);
+        latestY = memoPointerY(ev);
 
         if (dragFrame === null) {
           dragFrame = requestAnimationFrame(applyDrag);
@@ -1225,8 +1285,8 @@
 
         // 屏幕边缘回弹保护
         const rect = wrapper.getBoundingClientRect();
-        const screenW = window.innerWidth;
-        const screenH = window.innerHeight;
+        const screenW = memoViewport().width;
+        const screenH = memoViewport().height;
         const padding = 20;
 
         let newLeft = state.x;
@@ -1235,8 +1295,8 @@
 
         if (newLeft < padding) { newLeft = padding; overBounds = true; }
         if (newTop < padding) { newTop = padding; overBounds = true; }
-        if (newLeft + rect.width > screenW - padding) { newLeft = screenW - rect.width - padding; overBounds = true; }
-        if (newTop + rect.height > screenH - padding) { newTop = screenH - rect.height - padding; overBounds = true; }
+        if (newLeft + (rect.width * memoScale()) > screenW - padding) { newLeft = screenW - (rect.width * memoScale()) - padding; overBounds = true; }
+        if (newTop + (rect.height * memoScale()) > screenH - padding) { newTop = screenH - (rect.height * memoScale()) - padding; overBounds = true; }
 
         if (overBounds) {
           wrapper.style.transition = 'left 0.3s ease-out, top 0.3s ease-out';
@@ -1386,8 +1446,8 @@
       isResizing = true;
       panel.style.transition = 'none';
 
-      const startX = e.clientX;
-      const startY = e.clientY;
+      const startX = memoPointerX(e);
+      const startY = memoPointerY(e);
       const startW = state.w;
       const startH = state.h;
       let latestX = startX;
@@ -1418,8 +1478,8 @@
 
       function doResize(ev) {
         ev.preventDefault();
-        latestX = ev.clientX;
-        latestY = ev.clientY;
+        latestX = memoPointerX(ev);
+        latestY = memoPointerY(ev);
 
         if (resizeFrame === null) {
           resizeFrame = requestAnimationFrame(applyResize);
@@ -1528,8 +1588,8 @@
   // 面板内鼠标跟踪
   panel.addEventListener('mousemove', function(e) {
     const rect = panel.getBoundingClientRect();
-    mouseNode.x = e.clientX - rect.left;
-    mouseNode.y = e.clientY - rect.top;
+    mouseNode.x = (e.clientX - rect.left) * memoScale();
+    mouseNode.y = (e.clientY - rect.top) * memoScale();
   });
 
   // 鼠标移出面板时清除吸附节点
@@ -3867,11 +3927,19 @@ createRoot(document.getElementById('root')).render(
         z-index: 5 !important;
       }
 
-      [${HOST_CODE_HEADER_ATTR}][${HOST_CODE_CORNER_ATTR}] > .float-host-code-fullscreen-btn {
+      [${HOST_CODE_HEADER_ATTR}][${HOST_CODE_CORNER_ATTR}] > .float-host-code-toolbar {
         position: absolute !important;
         top: 4px !important;
         right: 10px !important;
         pointer-events: auto !important;
+      }
+
+      .float-host-code-toolbar {
+        display: inline-flex !important;
+        align-items: center !important;
+        gap: 8px !important;
+        flex-wrap: nowrap !important;
+        flex: 0 0 auto !important;
       }
 
       /* 代码块底部单起一行，右对齐 */
@@ -4323,6 +4391,212 @@ createRoot(document.getElementById('root')).render(
 	    return footer;
 	  }
 
+  const collapsedHostCodeIds = new Set();
+  const hostCodeOriginalStyles = new WeakMap();
+  const collapseStyleProperties = ['max-height', 'height', 'min-height', 'overflow-y', 'box-sizing'];
+
+  function applyHostCodeCollapse(element, collapsed) {
+    if (!element) return;
+    if (collapsed) {
+      if (!hostCodeOriginalStyles.has(element)) {
+        hostCodeOriginalStyles.set(element, collapseStyleProperties.map((name) => (
+          [name, element.style.getPropertyValue(name), element.style.getPropertyPriority(name)]
+        )));
+      }
+      const text = element.querySelector('code') || element;
+      const computed = window.getComputedStyle(text);
+      const lineHeight = parseFloat(computed.lineHeight) || (parseFloat(computed.fontSize) || 14) * 1.2;
+      // 包含 padding 的总高度也不超过十行，不改代码内容或横向滚动。
+      element.style.setProperty('box-sizing', 'border-box', 'important');
+      element.style.setProperty('max-height', `${lineHeight * 10}px`, 'important');
+      element.style.setProperty('height', 'auto', 'important');
+      element.style.setProperty('min-height', '0', 'important');
+      element.style.setProperty('overflow-y', 'hidden', 'important');
+    } else {
+      const original = hostCodeOriginalStyles.get(element);
+      if (!original) return;
+      original.forEach(([name, value, priority]) => {
+        if (value) element.style.setProperty(name, value, priority);
+        else element.style.removeProperty(name);
+      });
+      hostCodeOriginalStyles.delete(element);
+    }
+  }
+
+  function findHostReplyRoot(element) {
+    // 优先使用各站点的回复正文边界，避免把整个会话或代码块当作回复。
+    const selectors = [
+      'model-response', '[data-message-author-role="assistant"]',
+      '[data-testid="assistant-message"]', '[data-role="assistant"]',
+      '.segment-assistant', '.ds-markdown', '.markdown-body', '.markdown',
+      '[class*="message-content"]', '[class*="messageContent"]', 'article'
+    ];
+    for (const selector of selectors) {
+      const reply = element.closest(selector);
+      if (reply && reply !== element && !reply.closest('pre')) return reply;
+    }
+    return findHostCodeContainer(element) || element;
+  }
+
+  let cancelHostReplyScroll = null;
+
+  function scrollHostReplyToCenter(element, edge = 'top') {
+    if (cancelHostReplyScroll) cancelHostReplyScroll();
+    const reply = findHostReplyRoot(element);
+    let scroller = reply.parentElement;
+    while (scroller && scroller !== document.documentElement && scroller !== document.body) {
+      const style = window.getComputedStyle(scroller);
+      if (/(auto|scroll|overlay)/.test(style.overflowY) && scroller.scrollHeight > scroller.clientHeight) break;
+      scroller = scroller.parentElement;
+    }
+    if (!scroller || scroller === document.body || scroller === document.documentElement) {
+      scroller = document.scrollingElement || document.documentElement;
+    }
+    const root = scroller === document.scrollingElement || scroller === document.documentElement;
+    const rect = root ? { top: 0, bottom: window.innerHeight } : scroller.getBoundingClientRect();
+    const viewportCenter = (Math.max(0, rect.top) + Math.min(window.innerHeight, rect.bottom)) / 2;
+    const start = scroller.scrollTop;
+    const target = Math.max(0, Math.min(scroller.scrollHeight - scroller.clientHeight,
+      start + reply.getBoundingClientRect()[edge] - viewportCenter));
+    const oldBehavior = [scroller.style.getPropertyValue('scroll-behavior'), scroller.style.getPropertyPriority('scroll-behavior')];
+    const oldAnchor = [scroller.style.getPropertyValue('overflow-anchor'), scroller.style.getPropertyPriority('overflow-anchor')];
+    scroller.style.setProperty('scroll-behavior', 'auto', 'important');
+    scroller.style.setProperty('overflow-anchor', 'none', 'important');
+    let frameId = 0;
+    const cleanup = () => {
+      window.cancelAnimationFrame(frameId);
+      for (const [name, saved] of [['scroll-behavior', oldBehavior], ['overflow-anchor', oldAnchor]]) {
+        if (saved[0]) scroller.style.setProperty(name, saved[0], saved[1]);
+        else scroller.style.removeProperty(name);
+      }
+      window.removeEventListener('wheel', cleanup, true);
+      window.removeEventListener('touchstart', cleanup, true);
+      if (cancelHostReplyScroll === cleanup) cancelHostReplyScroll = null;
+    };
+    cancelHostReplyScroll = cleanup;
+    window.addEventListener('wheel', cleanup, { capture: true, passive: true });
+    window.addEventListener('touchstart', cleanup, { capture: true, passive: true });
+    const started = performance.now();
+    const duration = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 600;
+    function step(now) {
+      const progress = duration ? Math.min(1, (now - started) / duration) : 1;
+      scroller.scrollTop = start + (target - start) * (1 - Math.pow(1 - progress, 3));
+      if (progress < 1) frameId = window.requestAnimationFrame(step);
+      else cleanup();
+    }
+    frameId = window.requestAnimationFrame(step);
+  }
+
+  async function copyHostCode(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    const focused = document.activeElement;
+    const input = document.createElement('textarea');
+    input.value = text;
+    input.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0';
+    document.body.appendChild(input);
+    try {
+      input.select();
+      if (!document.execCommand('copy')) throw new Error('剪贴板写入失败');
+    } finally {
+      input.remove();
+      if (focused && focused.focus) focused.focus({ preventScroll: true });
+    }
+  }
+
+  function syncHostCodeCollapseButtons(codeId) {
+    const collapsed = collapsedHostCodeIds.has(codeId);
+    document.querySelectorAll(`[data-float-code-action="collapse"][${HOST_CODE_ID_ATTR}="${codeId}"]`).forEach((button) => {
+      const label = collapsed ? '展开' : '折叠';
+      if (button.textContent !== label) button.textContent = label;
+      button.setAttribute('aria-expanded', String(!collapsed));
+    });
+  }
+
+  function ensureHostCodeActions(element, codeId, footer, variant) {
+    const longCode = readHostCode(element).split('\n').length > 15;
+    if (!longCode && collapsedHostCodeIds.delete(codeId)) applyHostCodeCollapse(element, false);
+    const actions = variant === 'top'
+      ? [['collapse', '折叠'], ['scroll-down', '向下滚动']]
+      : [['collapse', '折叠'], ['scroll-up', '向上滚动'], ['copy', '复制']];
+    for (const [action, label] of actions) {
+      let button = footer.querySelector(`[data-float-code-action="${action}"]`);
+      if (action !== 'copy' && !longCode) {
+        if (button) button.remove();
+        continue;
+      }
+      if (!button) {
+        button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'float-host-code-fullscreen-btn';
+        button.setAttribute('data-float-code-action', action);
+        button.setAttribute(HOST_CODE_ID_ATTR, codeId);
+        if (isGeminiPage()) button.setAttribute('data-float-code-contrast', 'true');
+        button.textContent = label;
+        let copyTimer = null;
+        let copySequence = 0;
+        button.addEventListener('click', async (event) => {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          const code = getHostCodeElement(button);
+          if (!code) return;
+          if (action === 'copy') {
+            const sequence = ++copySequence;
+            window.clearTimeout(copyTimer);
+            try {
+              await copyHostCode(readHostCode(code));
+              if (sequence !== copySequence) return;
+              button.textContent = '已复制';
+            } catch (error) {
+              if (sequence !== copySequence) return;
+              button.textContent = '复制失败';
+            }
+            copyTimer = window.setTimeout(() => { button.textContent = '复制'; }, 1000);
+          } else if (action === 'scroll-up' || action === 'scroll-down') {
+            scrollHostReplyToCenter(code, action === 'scroll-down' ? 'bottom' : 'top');
+          } else {
+            const collapsed = !collapsedHostCodeIds.has(codeId);
+            if (collapsed) collapsedHostCodeIds.add(codeId);
+            else collapsedHostCodeIds.delete(codeId);
+            applyHostCodeCollapse(code, collapsed);
+            syncHostCodeCollapseButtons(codeId);
+          }
+        }, true);
+        footer.insertBefore(button, footer.querySelector(`[${HOST_CODE_VARIANT_ATTR}="${variant}"]`));
+      }
+      if (action === 'collapse') {
+        const collapsed = collapsedHostCodeIds.has(codeId);
+        if (collapsed && !hostCodeOriginalStyles.has(element)) applyHostCodeCollapse(element, true);
+        const label = collapsed ? '展开' : '折叠';
+        if (button.textContent !== label) button.textContent = label;
+        button.setAttribute('aria-expanded', String(!collapsed));
+      }
+    }
+    let before = footer.querySelector(`[${HOST_CODE_VARIANT_ATTR}="${variant}"]`);
+    for (const [action] of actions.slice().reverse()) {
+      const button = footer.querySelector(`[data-float-code-action="${action}"]`);
+      if (!button) continue;
+      if (button.nextElementSibling !== before) footer.insertBefore(button, before);
+      before = button;
+    }
+  }
+
+  function ensureHostCodeTopActions(element, codeId) {
+    const topButton = getHostCodeButtons(codeId).find((button) => button.getAttribute(HOST_CODE_VARIANT_ATTR) === 'top');
+    if (!topButton) return;
+    let toolbar = topButton.parentElement;
+    if (!toolbar.classList.contains('float-host-code-toolbar')) {
+      toolbar = document.createElement('span');
+      toolbar.className = 'float-host-code-toolbar';
+      topButton.before(toolbar);
+      toolbar.appendChild(topButton);
+    }
+    ensureHostCodeActions(element, codeId, toolbar, 'top');
+  }
+
+
 	  function createHostCodeFullscreenButton(codeId, variant) {
 	    const button = document.createElement('button');
 	    button.type = 'button';
@@ -4408,6 +4682,9 @@ createRoot(document.getElementById('root')).render(
 
     findHostCodeBlocks().forEach(({ element, codeId, container }) => {
       hostCodeElementCache.set(codeId, element);
+      ensureHostCodeFullscreenStyle();
+      ensureHostCodeActions(element, codeId, ensureHostCodeFooter(element, codeId), 'bottom');
+      ensureHostCodeTopActions(element, codeId);
       const existingButtons = getHostCodeButtons(codeId);
 	      const hasTop = existingButtons.some((button) => button.getAttribute(HOST_CODE_VARIANT_ATTR) === 'top');
 	      const hasBottom = existingButtons.some((button) => button.getAttribute(HOST_CODE_VARIANT_ATTR) === 'bottom');
@@ -4437,6 +4714,7 @@ createRoot(document.getElementById('root')).render(
 	      if (!hasBottom) {
 	        ensureHostCodeFooter(element, codeId).appendChild(createHostCodeFullscreenButton(codeId, 'bottom'));
 	      }
+      ensureHostCodeTopActions(element, codeId);
 	    });
 	  }
 
@@ -4499,7 +4777,8 @@ createRoot(document.getElementById('root')).render(
 	    const observer = new MutationObserver(scheduleInjection);
 	    observer.observe(document.documentElement, {
 	      childList: true,
-	      subtree: true
+	      subtree: true,
+          characterData: true
 	    });
 
 	    window.addEventListener('pagehide', () => {
